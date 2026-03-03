@@ -149,6 +149,8 @@ pub struct App {
     space_pressed: bool, // Track if space was just pressed
     // Plugin system
     plugin_manager: plugins::PluginManager,
+    // Scrolling
+    scroll_offset: usize, // Line number at top of viewport
 }
 
 impl Default for App {
@@ -180,6 +182,7 @@ impl Default for App {
             fuzzy_selected: 0,
             space_pressed: false,
             plugin_manager,
+            scroll_offset: 0,
         }
     }
 }
@@ -212,6 +215,7 @@ impl App {
                     fuzzy_selected: 0,
                     space_pressed: false,
                     plugin_manager,
+                    scroll_offset: 0,
                 });
             }
         };
@@ -246,6 +250,7 @@ impl App {
             fuzzy_selected: 0,
             space_pressed: false,
             plugin_manager,
+            scroll_offset: 0,
         })
     }
 }
@@ -254,6 +259,10 @@ impl App {
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut tui::Tui) -> io::Result<()> {
         while !self.exit {
+            // Adjust scroll to keep cursor visible (estimate viewport height)
+            let viewport_height = terminal.get_frame().size().height.saturating_sub(2) as usize;
+            self.adjust_scroll(viewport_height);
+
             terminal.draw(|frame| self.render_frame(frame))?;
             self.handle_events()?;
         }
@@ -264,8 +273,9 @@ impl App {
 
         // Calculate cursor screen position
         // +1 for left border, +1 for top border
+        // Adjust for scroll offset
         let cursor_x = self.cursor.col as u16 + 1;
-        let cursor_y = self.cursor.row as u16 + 1;
+        let cursor_y = (self.cursor.row.saturating_sub(self.scroll_offset)) as u16 + 1;
 
         // Set the terminal cursor position
         frame.set_cursor(cursor_x, cursor_y);
@@ -394,6 +404,11 @@ impl App {
             KeyCode::Char('F') => self.pending_key = Some('F'), // Wait for character (backward)
             KeyCode::Char('u') => self.undo(),
             KeyCode::Char('r') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.redo(),
+            // Page scrolling
+            KeyCode::Char('f') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.page_down(),
+            KeyCode::Char('b') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.page_up(),
+            KeyCode::Char('d') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.half_page_down(),
+            KeyCode::Char('u') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.half_page_up(),
             // Visual modes
             KeyCode::Char('v') => self.enter_visual_mode(),
             KeyCode::Char('V') => self.enter_visual_line_mode(),
@@ -683,6 +698,51 @@ impl App {
             self.cursor.row = self.buffer.lines.len() - 1;
             self.cursor.col = 0;
             self.cursor.desired_col = 0;
+        }
+    }
+
+    // Scrolling methods
+    fn page_down(&mut self) {
+        // Calculate viewport height (we'll estimate ~30 lines for now, will be refined in rendering)
+        let viewport_height = 30;
+        let new_row = (self.cursor.row + viewport_height).min(self.buffer.lines.len().saturating_sub(1));
+        self.cursor.row = new_row;
+        self.cursor.col = 0;
+        self.cursor.desired_col = 0;
+        self.scroll_offset = (self.scroll_offset + viewport_height).min(self.buffer.lines.len().saturating_sub(viewport_height));
+    }
+
+    fn page_up(&mut self) {
+        let viewport_height = 30;
+        let new_row = self.cursor.row.saturating_sub(viewport_height);
+        self.cursor.row = new_row;
+        self.cursor.col = 0;
+        self.cursor.desired_col = 0;
+        self.scroll_offset = self.scroll_offset.saturating_sub(viewport_height);
+    }
+
+    fn half_page_down(&mut self) {
+        let viewport_height = 15; // Half of estimated viewport
+        let new_row = (self.cursor.row + viewport_height).min(self.buffer.lines.len().saturating_sub(1));
+        self.cursor.row = new_row;
+        self.clamp_cursor_to_line();
+    }
+
+    fn half_page_up(&mut self) {
+        let viewport_height = 15; // Half of estimated viewport
+        let new_row = self.cursor.row.saturating_sub(viewport_height);
+        self.cursor.row = new_row;
+        self.clamp_cursor_to_line();
+    }
+
+    fn adjust_scroll(&mut self, viewport_height: usize) {
+        // Ensure cursor is visible in viewport
+        if self.cursor.row < self.scroll_offset {
+            // Cursor is above viewport, scroll up
+            self.scroll_offset = self.cursor.row;
+        } else if self.cursor.row >= self.scroll_offset + viewport_height {
+            // Cursor is below viewport, scroll down
+            self.scroll_offset = self.cursor.row.saturating_sub(viewport_height - 1);
         }
     }
 
@@ -1615,9 +1675,14 @@ impl Widget for &App {
             .borders(Borders::ALL)
             .border_set(border::THICK);
 
+        // Calculate viewport height (inner area after borders)
+        let viewport_height = area.height.saturating_sub(2) as usize; // -2 for borders
+
         let buffer_lines: Vec<Line> = self.buffer.lines
             .iter()
             .enumerate()
+            .skip(self.scroll_offset)
+            .take(viewport_height)
             .map(|(row, yline)| {
                 if let Some((start_row, start_col)) = self.visual_start {
                     if self.mode == Mode::Visual || self.mode == Mode::VisualLine {
