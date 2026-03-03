@@ -381,6 +381,12 @@ impl App {
 
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
+            // Ctrl-modified commands (must come BEFORE plain character patterns)
+            KeyCode::Char('r') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.redo(),
+            KeyCode::Char('f') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.page_down(),
+            KeyCode::Char('b') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.page_up(),
+            KeyCode::Char('d') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.half_page_down(),
+            KeyCode::Char('u') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.half_page_up(),
             // Navigation
             KeyCode::Char('h') => self.move_cursor_left(),
             KeyCode::Char('j') => self.move_cursor_down(),
@@ -403,12 +409,6 @@ impl App {
             KeyCode::Char('f') => self.pending_key = Some('f'), // Wait for character
             KeyCode::Char('F') => self.pending_key = Some('F'), // Wait for character (backward)
             KeyCode::Char('u') => self.undo(),
-            KeyCode::Char('r') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.redo(),
-            // Page scrolling
-            KeyCode::Char('f') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.page_down(),
-            KeyCode::Char('b') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.page_up(),
-            KeyCode::Char('d') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.half_page_down(),
-            KeyCode::Char('u') if key_event.modifiers.contains(event::KeyModifiers::CONTROL) => self.half_page_up(),
             // Visual modes
             KeyCode::Char('v') => self.enter_visual_mode(),
             KeyCode::Char('V') => self.enter_visual_line_mode(),
