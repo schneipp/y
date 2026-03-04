@@ -1,0 +1,110 @@
+use ratatui::{
+    layout::{Alignment, Rect},
+    style::{Style, Stylize},
+    symbols::border,
+    text::Line,
+    widgets::{block::*, Block, Borders, Widget},
+    buffer::Buffer,
+};
+
+use crate::mode::Mode;
+use crate::theme::Theme;
+
+pub struct StatusBar<'a> {
+    pub mode: &'a Mode,
+    pub filename: &'a Option<String>,
+    pub modified: bool,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub char_num: usize,
+    pub command_buffer: &'a str,
+    pub is_active: bool,
+    pub theme: &'a Theme,
+}
+
+impl<'a> Widget for StatusBar<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let ui = &self.theme.ui;
+
+        let title_text = if let Some(ref filename) = self.filename {
+            if self.modified {
+                format!(" Y Editor - {}[+] ", filename)
+            } else {
+                format!(" Y Editor - {} ", filename)
+            }
+        } else {
+            " Y Editor [No Name] ".to_string()
+        };
+        let title = Title::from(title_text.bold());
+
+        let position_info = Title::from(
+            format!(
+                " LN:{} CL:{} CHR:{} ",
+                self.cursor_row + 1,
+                self.cursor_col + 1,
+                self.char_num
+            )
+            .fg(ui.status_position_fg)
+            .bold(),
+        );
+
+        let mode_color = match self.mode {
+            Mode::Normal => ui.status_mode_normal,
+            Mode::Insert => ui.status_mode_insert,
+            Mode::Visual | Mode::VisualLine => ui.status_mode_visual,
+            Mode::Command => ui.status_mode_command,
+            Mode::FuzzyFinder => ui.status_mode_normal,
+        };
+
+        let mode_text = match self.mode {
+            Mode::Normal => "-- NORMAL --",
+            Mode::Insert => "-- INSERT --",
+            Mode::Visual => "-- VISUAL --",
+            Mode::VisualLine => "-- VISUAL LINE --",
+            Mode::Command => "-- COMMAND --",
+            Mode::FuzzyFinder => "-- FINDER --",
+        };
+
+        let instructions = if *self.mode == Mode::Command {
+            Title::from(Line::from(vec![
+                ":".into(),
+                self.command_buffer.to_string().fg(ui.popup_query),
+            ]))
+        } else {
+            Title::from(Line::from(vec![
+                " ".into(),
+                mode_text.fg(mode_color).bold(),
+                " | Transform ".into(),
+                "<F1>".fg(ui.status_keybind_fg).bold(),
+                " Operation ".into(),
+                "<F2>".fg(ui.status_keybind_fg).bold(),
+                " File ".into(),
+                "<F3> ".fg(ui.status_keybind_fg).bold(),
+            ]))
+        };
+
+        let border_color = if self.is_active {
+            ui.border_active
+        } else {
+            ui.border_inactive
+        };
+
+        let block = Block::default()
+            .title(title.alignment(Alignment::Center))
+            .title(
+                instructions
+                    .alignment(Alignment::Left)
+                    .position(Position::Bottom),
+            )
+            .title(
+                position_info
+                    .alignment(Alignment::Right)
+                    .position(Position::Bottom),
+            )
+            .borders(Borders::ALL)
+            .border_set(border::THICK)
+            .border_style(Style::default().fg(border_color));
+
+        block.render(area, buf);
+    }
+}

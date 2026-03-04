@@ -6,7 +6,9 @@ pub mod js_fuzzy_finder;
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::{Cursor, Mode, YBuffer};
+use crate::buffer::{BufferId, YBuffer};
+use crate::cursor::Cursor;
+use crate::mode::Mode;
 
 /// Plugin trait for extending editor functionality
 pub trait Plugin {
@@ -18,6 +20,12 @@ pub trait Plugin {
 
     /// Render plugin UI (if active)
     fn render(&self, area: Rect, buf: &mut Buffer, ctx: &PluginContext);
+
+    /// Render plugin UI using read-only context (no cloning needed)
+    fn render_readonly(&self, area: Rect, buf: &mut Buffer, ctx: &PluginRenderContext) {
+        // Default: no-op. Plugins that need rendering should override.
+        let _ = (area, buf, ctx);
+    }
 
     /// Plugin is currently active (has focus)
     fn is_active(&self) -> bool;
@@ -35,10 +43,19 @@ pub trait Plugin {
 /// Context passed to plugins for accessing editor state
 pub struct PluginContext<'a> {
     pub buffer: &'a mut YBuffer,
+    pub buffer_id: BufferId,
     pub cursor: &'a mut Cursor,
     pub mode: &'a mut Mode,
     pub filename: &'a Option<String>,
     pub modified: &'a mut bool,
+}
+
+/// Read-only context for plugin rendering (avoids cloning buffer/cursor/mode)
+pub struct PluginRenderContext<'a> {
+    pub buffer: &'a YBuffer,
+    pub cursor: &'a Cursor,
+    pub mode: &'a Mode,
+    pub filename: &'a Option<String>,
 }
 
 /// Manages all plugins
@@ -71,10 +88,8 @@ impl PluginManager {
         for plugin in &mut self.plugins {
             if plugin.is_active() {
                 if plugin.handle_key(key, ctx) {
-                    // Plugin consumed the event
                     return true;
                 }
-                // Plugin didn't consume, continue to next active plugin
             }
         }
         false
@@ -89,17 +104,23 @@ impl PluginManager {
         }
     }
 
+    /// Render all active plugins using read-only context (no clone needed)
+    pub fn render_readonly(&self, area: Rect, buf: &mut Buffer, ctx: &PluginRenderContext) {
+        for plugin in &self.plugins {
+            if plugin.is_active() {
+                plugin.render_readonly(area, buf, ctx);
+            }
+        }
+    }
+
     /// Activate a plugin by name
     pub fn activate(&mut self, name: &str) -> Result<(), String> {
-        // Deactivate all plugins first
         for plugin in &mut self.plugins {
             plugin.deactivate();
         }
 
-        // Find and activate the requested plugin
         for plugin in &mut self.plugins {
             if plugin.name() == name {
-                // Plugin will activate itself when it starts handling keys
                 return Ok(());
             }
         }

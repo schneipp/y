@@ -1,16 +1,27 @@
+use std::collections::HashMap;
+
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 use tree_sitter::{Parser, Query, QueryCursor, Tree};
 use tree_sitter_rust;
 
 use crate::plugins::{Plugin, PluginContext};
+use crate::buffer::{BufferId, YBuffer};
+use crate::theme::SyntaxColors;
+
+/// Per-buffer cached parse state
+struct BufferCache {
+    tree: Option<Tree>,
+    line_highlights: Vec<Vec<(usize, usize, Color)>>,
+}
 
 pub struct SyntaxHighlighter {
     parser: Parser,
-    tree: Option<Tree>,
     highlight_query: Query,
-    // Cache of line highlights: Vec<(start_col, end_col, Color)>
-    line_highlights: Vec<Vec<(usize, usize, Color)>>,
+    /// Per-buffer parse trees and highlight caches
+    caches: HashMap<BufferId, BufferCache>,
+    /// Current syntax colors from theme
+    syntax_colors: SyntaxColors,
 }
 
 impl SyntaxHighlighter {
@@ -20,7 +31,6 @@ impl SyntaxHighlighter {
             .set_language(tree_sitter_rust::language())
             .expect("Error loading Rust grammar");
 
-        // Define highlight query for Rust syntax
         let highlight_query_source = r#"
             (function_item name: (identifier) @function)
             (call_expression function: (identifier) @function.call)
@@ -63,16 +73,38 @@ impl SyntaxHighlighter {
         let highlight_query = Query::new(tree_sitter_rust::language(), highlight_query_source)
             .expect("Error creating highlight query");
 
+        // Default colors — will be overwritten by theme on init
+        let syntax_colors = SyntaxColors {
+            keyword: Color::Red,
+            function: Color::Yellow,
+            function_macro: Color::Cyan,
+            type_: Color::Blue,
+            type_builtin: Color::Blue,
+            string: Color::Green,
+            number: Color::Magenta,
+            comment: Color::DarkGray,
+            constant_builtin: Color::Magenta,
+            variable_builtin: Color::Cyan,
+            operator: Color::Red,
+            default: Color::Reset,
+        };
+
         Self {
             parser,
-            tree: None,
             highlight_query,
-            line_highlights: Vec::new(),
+            caches: HashMap::new(),
+            syntax_colors,
         }
     }
 
+    /// Update syntax colors from theme; invalidates all caches
+    pub fn set_syntax_colors(&mut self, colors: SyntaxColors) {
+        self.syntax_colors = colors;
+        self.caches.clear();
+    }
+
     /// Parse the buffer and update syntax tree
-    pub fn parse_buffer(&mut self, buffer: &crate::YBuffer) {
+    pub fn parse_buffer(&mut self, buffer: &YBuffer, buffer_id: BufferId) {
         let source_code: String = buffer
             .lines
             .iter()
@@ -80,38 +112,53 @@ impl SyntaxHighlighter {
             .collect::<Vec<_>>()
             .join("\n");
 
-        self.tree = self.parser.parse(&source_code, None);
+        let cache = self.caches.entry(buffer_id).or_insert_with(|| BufferCache {
+            tree: None,
+            line_highlights: Vec::new(),
+        });
 
-        // Compute highlights for all lines
-        self.compute_highlights(&source_code);
+        // Full reparse every time — incremental parsing requires Tree::edit()
+        cache.tree = self.parser.parse(&source_code, None);
+
+        Self::compute_highlights(
+            &self.highlight_query,
+            &self.syntax_colors,
+            &mut cache.line_highlights,
+            &source_code,
+            &cache.tree,
+        );
     }
 
-    fn compute_highlights(&mut self, source_code: &str) {
-        self.line_highlights.clear();
+    fn compute_highlights(
+        query: &Query,
+        colors: &SyntaxColors,
+        line_highlights: &mut Vec<Vec<(usize, usize, Color)>>,
+        source_code: &str,
+        tree: &Option<Tree>,
+    ) {
+        line_highlights.clear();
 
-        // Count lines
         let line_count = source_code.lines().count().max(1);
-        self.line_highlights.resize(line_count, Vec::new());
+        line_highlights.resize(line_count, Vec::new());
 
-        if let Some(tree) = &self.tree {
+        if let Some(tree) = tree {
             let mut query_cursor = QueryCursor::new();
             let matches = query_cursor.matches(
-                &self.highlight_query,
+                query,
                 tree.root_node(),
                 source_code.as_bytes(),
             );
 
             for match_ in matches {
                 for capture in match_.captures {
-                    let capture_name = &self.highlight_query.capture_names()[capture.index as usize];
-                    let color = self.color_for_capture(capture_name);
+                    let capture_name = &query.capture_names()[capture.index as usize];
+                    let color = Self::color_for_capture(colors, capture_name);
 
                     let start_pos = capture.node.start_position();
                     let end_pos = capture.node.end_position();
 
-                    // Add highlight for each line this capture spans
                     for line_idx in start_pos.row..=end_pos.row {
-                        if line_idx < self.line_highlights.len() {
+                        if line_idx < line_highlights.len() {
                             let start_col = if line_idx == start_pos.row {
                                 start_pos.column
                             } else {
@@ -120,44 +167,45 @@ impl SyntaxHighlighter {
                             let end_col = if line_idx == end_pos.row {
                                 end_pos.column
                             } else {
-                                usize::MAX // Rest of line
+                                usize::MAX
                             };
 
-                            self.line_highlights[line_idx].push((start_col, end_col, color));
+                            line_highlights[line_idx].push((start_col, end_col, color));
                         }
                     }
                 }
             }
 
-            // Sort highlights by start column for each line
-            for line_highlights in &mut self.line_highlights {
-                line_highlights.sort_by_key(|(start, _, _)| *start);
+            for lh in line_highlights.iter_mut() {
+                lh.sort_by_key(|(start, _, _)| *start);
             }
         }
     }
 
-    fn color_for_capture(&self, capture_name: &str) -> Color {
+    fn color_for_capture(colors: &SyntaxColors, capture_name: &str) -> Color {
         match capture_name {
-            "function" | "function.call" => Color::Yellow,
-            "function.macro" => Color::Cyan,
-            "type" | "type.builtin" => Color::Blue,
-            "string" => Color::Green,
-            "number" => Color::Magenta,
-            "comment" => Color::DarkGray,
-            "keyword" | "keyword.operator" => Color::Red,
-            "constant.builtin" => Color::Magenta,
-            "variable.builtin" => Color::Cyan,
-            _ => Color::Reset,
+            "function" | "function.call" => colors.function,
+            "function.macro" => colors.function_macro,
+            "type" => colors.type_,
+            "type.builtin" => colors.type_builtin,
+            "string" => colors.string,
+            "number" => colors.number,
+            "comment" => colors.comment,
+            "keyword" | "keyword.operator" => colors.keyword,
+            "constant.builtin" => colors.constant_builtin,
+            "variable.builtin" => colors.variable_builtin,
+            _ => colors.default,
         }
     }
 
-    /// Get highlights for a specific line
-    pub fn get_line_highlights(&self, line_idx: usize) -> &[(usize, usize, Color)] {
-        if line_idx < self.line_highlights.len() {
-            &self.line_highlights[line_idx]
-        } else {
-            &[]
+    /// Get highlights for a specific line of a specific buffer
+    pub fn get_line_highlights(&self, buffer_id: BufferId, line_idx: usize) -> &[(usize, usize, Color)] {
+        if let Some(cache) = self.caches.get(&buffer_id) {
+            if line_idx < cache.line_highlights.len() {
+                return &cache.line_highlights[line_idx];
+            }
         }
+        &[]
     }
 }
 
@@ -167,25 +215,17 @@ impl Plugin for SyntaxHighlighter {
     }
 
     fn handle_key(&mut self, _key: KeyEvent, ctx: &mut PluginContext) -> bool {
-        // Reparse buffer when it changes
-        // Note: In a real implementation, we'd want to track if the buffer actually changed
-        // For now, we'll reparse on every key press (could be optimized)
-        self.parse_buffer(ctx.buffer);
-        false // Don't consume the event
+        self.parse_buffer(ctx.buffer, ctx.buffer_id);
+        false
     }
 
-    fn render(&self, _area: Rect, _buf: &mut Buffer, _ctx: &PluginContext) {
-        // Syntax highlighting is passive - it doesn't render UI
-        // The rendering logic will query this plugin for highlights
-    }
+    fn render(&self, _area: Rect, _buf: &mut Buffer, _ctx: &PluginContext) {}
 
     fn is_active(&self) -> bool {
-        true // Always active
+        true
     }
 
-    fn deactivate(&mut self) {
-        // Syntax highlighter stays active
-    }
+    fn deactivate(&mut self) {}
 
     fn as_any(&self) -> &dyn std::any::Any {
         self

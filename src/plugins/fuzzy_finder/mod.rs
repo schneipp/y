@@ -122,18 +122,18 @@ impl FuzzyFinderPlugin {
                 Some(FuzzyFinderType::Files) => {
                     // Open the file
                     if let Ok(content) = std::fs::read_to_string(selected) {
-                        let lines: Vec<crate::YLine> = if content.is_empty() {
-                            vec![crate::YLine::new()]
+                        let lines: Vec<crate::buffer::YLine> = if content.is_empty() {
+                            vec![crate::buffer::YLine::new()]
                         } else {
                             content.lines()
-                                .map(|line| crate::YLine::from(line.to_string()))
+                                .map(|line| crate::buffer::YLine::from(line.to_string()))
                                 .collect()
                         };
-                        *ctx.buffer = crate::YBuffer::from(lines);
+                        *ctx.buffer = crate::buffer::YBuffer::from(lines);
                         ctx.cursor.row = 0;
                         ctx.cursor.col = 0;
                         ctx.cursor.desired_col = 0;
-                        *ctx.mode = crate::Mode::Normal;
+                        *ctx.mode = crate::mode::Mode::Normal;
                         *ctx.modified = false;
                         self.deactivate();
                         return true;
@@ -148,20 +148,20 @@ impl FuzzyFinderPlugin {
 
                         // Open file and jump to line
                         if let Ok(content) = std::fs::read_to_string(filename) {
-                            let lines: Vec<crate::YLine> = if content.is_empty() {
-                                vec![crate::YLine::new()]
+                            let lines: Vec<crate::buffer::YLine> = if content.is_empty() {
+                                vec![crate::buffer::YLine::new()]
                             } else {
                                 content.lines()
-                                    .map(|line| crate::YLine::from(line.to_string()))
+                                    .map(|line| crate::buffer::YLine::from(line.to_string()))
                                     .collect()
                             };
-                            *ctx.buffer = crate::YBuffer::from(lines);
+                            *ctx.buffer = crate::buffer::YBuffer::from(lines);
                             ctx.cursor.row = line_num
                                 .saturating_sub(1)
                                 .min(ctx.buffer.lines.len().saturating_sub(1));
                             ctx.cursor.col = 0;
                             ctx.cursor.desired_col = 0;
-                            *ctx.mode = crate::Mode::Normal;
+                            *ctx.mode = crate::mode::Mode::Normal;
                             *ctx.modified = false;
                             self.deactivate();
                             return true;
@@ -188,7 +188,7 @@ impl Plugin for FuzzyFinderPlugin {
         match key.code {
             KeyCode::Esc => {
                 self.deactivate();
-                *ctx.mode = crate::Mode::Normal;
+                *ctx.mode = crate::mode::Mode::Normal;
                 return true;
             }
             KeyCode::Char(c) => {
