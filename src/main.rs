@@ -161,7 +161,8 @@ impl Default for App {
 
         // Initialize plugin manager and register plugins
         let mut plugin_manager = plugins::PluginManager::new();
-        plugin_manager.register(Box::new(plugins::fuzzy_finder::FuzzyFinderPlugin::new()));
+        plugin_manager.register(Box::new(plugins::syntax_highlighter::SyntaxHighlighter::new()));
+        plugin_manager.register(Box::new(plugins::js_fuzzy_finder::JsFuzzyFinderPlugin::new()));
 
         Self {
             exit: false,
@@ -194,7 +195,8 @@ impl App {
             Err(_) => {
                 // File doesn't exist, create new buffer with filename
                 let mut plugin_manager = plugins::PluginManager::new();
-                plugin_manager.register(Box::new(plugins::fuzzy_finder::FuzzyFinderPlugin::new()));
+                plugin_manager.register(Box::new(plugins::syntax_highlighter::SyntaxHighlighter::new()));
+                plugin_manager.register(Box::new(plugins::js_fuzzy_finder::JsFuzzyFinderPlugin::new()));
 
                 return Ok(Self {
                     exit: false,
@@ -229,7 +231,8 @@ impl App {
         };
 
         let mut plugin_manager = plugins::PluginManager::new();
-        plugin_manager.register(Box::new(plugins::fuzzy_finder::FuzzyFinderPlugin::new()));
+        plugin_manager.register(Box::new(plugins::syntax_highlighter::SyntaxHighlighter::new()));
+        plugin_manager.register(Box::new(plugins::js_fuzzy_finder::JsFuzzyFinderPlugin::new()));
 
         Ok(Self {
             exit: false,
@@ -272,10 +275,41 @@ impl App {
         frame.render_widget(self, frame.size());
 
         // Calculate cursor screen position
-        // +1 for left border, +1 for top border
-        // Adjust for scroll offset
-        let cursor_x = self.cursor.col as u16 + 1;
-        let cursor_y = (self.cursor.row.saturating_sub(self.scroll_offset)) as u16 + 1;
+        let (cursor_x, cursor_y) = if self.mode == Mode::FuzzyFinder {
+            // Position cursor in fuzzy finder modal query input
+            if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
+                if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                    let query_len = fuzzy_plugin.get_query_length();
+                    let area = frame.size();
+
+                    // Calculate popup position (same as render logic)
+                    let popup_width = (area.width as f32 * 0.8) as u16;
+                    let popup_height = (area.height as f32 * 0.6) as u16;
+                    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+                    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+                    // Position cursor in query line: "> {query}█"
+                    // +1 for border, +2 for "> " prefix
+                    let x = popup_x + 1 + 2 + query_len as u16;
+                    let y = popup_y + 1; // First line inside border
+
+                    (x, y)
+                } else {
+                    // Fallback to normal position
+                    (self.cursor.col as u16 + 1, (self.cursor.row.saturating_sub(self.scroll_offset)) as u16 + 1)
+                }
+            } else {
+                // Fallback to normal position
+                (self.cursor.col as u16 + 1, (self.cursor.row.saturating_sub(self.scroll_offset)) as u16 + 1)
+            }
+        } else {
+            // Normal mode: position at buffer cursor
+            // +1 for left border, +1 for top border
+            // Adjust for scroll offset
+            let x = self.cursor.col as u16 + 1;
+            let y = (self.cursor.row.saturating_sub(self.scroll_offset)) as u16 + 1;
+            (x, y)
+        };
 
         // Set the terminal cursor position
         frame.set_cursor(cursor_x, cursor_y);
@@ -330,18 +364,20 @@ impl App {
                 KeyCode::Char('f') if matches!(self.pending_key, Some('f')) => {
                     self.pending_key = None;
                     // Activate fuzzy finder plugin for files
-                    if let Some(plugin) = self.plugin_manager.get_mut("fuzzy_finder") {
-                        if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<plugins::fuzzy_finder::FuzzyFinderPlugin>() {
-                            fuzzy_plugin.activate(plugins::fuzzy_finder::FuzzyFinderType::Files);
+                    if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+                        if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                            fuzzy_plugin.activate(plugins::js_fuzzy_finder::FuzzyFinderType::Files);
+                            self.mode = Mode::FuzzyFinder;
                         }
                     }
                     return;
                 }
                 KeyCode::Char('/') => {
                     // Activate fuzzy finder plugin for grep
-                    if let Some(plugin) = self.plugin_manager.get_mut("fuzzy_finder") {
-                        if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<plugins::fuzzy_finder::FuzzyFinderPlugin>() {
-                            fuzzy_plugin.activate(plugins::fuzzy_finder::FuzzyFinderType::Grep);
+                    if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+                        if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                            fuzzy_plugin.activate(plugins::js_fuzzy_finder::FuzzyFinderType::Grep);
+                            self.mode = Mode::FuzzyFinder;
                         }
                     }
                     return;
@@ -1737,6 +1773,48 @@ impl Widget for &App {
                         }
                     }
                 }
+
+                // Apply syntax highlighting
+                // Get highlights from SyntaxHighlighter plugin
+                if let Some(plugin) = self.plugin_manager.get("syntax_highlighter") {
+                    if let Some(highlighter) = plugin.as_ref().as_any().downcast_ref::<plugins::syntax_highlighter::SyntaxHighlighter>() {
+                        let highlights = highlighter.get_line_highlights(row);
+
+                        if !highlights.is_empty() {
+                            // Build spans with syntax colors
+                            let chars: Vec<char> = yline.text.chars().collect();
+                            let mut spans = Vec::new();
+                            let mut col = 0;
+
+                            for &(start_col, end_col, color) in highlights {
+                                // Add unstyled text before this highlight
+                                while col < start_col && col < chars.len() {
+                                    spans.push(Span::raw(chars[col].to_string()));
+                                    col += 1;
+                                }
+
+                                // Add highlighted text
+                                let actual_end = end_col.min(chars.len());
+                                while col < actual_end {
+                                    spans.push(Span::styled(
+                                        chars[col].to_string(),
+                                        Style::default().fg(color)
+                                    ));
+                                    col += 1;
+                                }
+                            }
+
+                            // Add remaining unstyled text
+                            while col < chars.len() {
+                                spans.push(Span::raw(chars[col].to_string()));
+                                col += 1;
+                            }
+
+                            return Line::from(spans);
+                        }
+                    }
+                }
+
                 Line::from(yline.text.clone())
             })
             .collect();

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Deno runtime wrapper for managing JavaScript plugins
 pub struct DenoPluginRuntime {
-    runtime: JsRuntime,
+    pub runtime: JsRuntime,
 }
 
 /// Data structure for key events passed to JS
@@ -12,6 +12,8 @@ pub struct JsKeyEvent {
     pub code: String,
     pub modifiers: Vec<String>,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub char: Option<String>,
 }
 
 /// Data structure for editor context passed to JS
@@ -33,7 +35,7 @@ pub enum JsPluginAction {
     InsertText { text: String },
     DeleteText { from_row: usize, from_col: usize, to_row: usize, to_col: usize },
     SetMode { mode: String },
-    OpenFile { path: String },
+    OpenFile { path: String, #[serde(skip_serializing_if = "Option::is_none")] line: Option<usize> },
     ShowPopup { title: String, content: Vec<String> },
     None,
 }

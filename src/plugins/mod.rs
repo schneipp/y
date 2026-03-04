@@ -1,5 +1,7 @@
 pub mod fuzzy_finder;
 pub mod deno_runtime;
+pub mod syntax_highlighter;
+pub mod js_fuzzy_finder;
 
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
@@ -24,6 +26,9 @@ pub trait Plugin {
     fn deactivate(&mut self);
 
     /// Downcast to concrete type (for accessing plugin-specific methods)
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Downcast to concrete mutable type (for accessing plugin-specific methods)
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
@@ -61,11 +66,15 @@ impl PluginManager {
         self.plugins.push(plugin);
     }
 
-    /// Distribute key event to active plugin, return true if consumed
+    /// Distribute key event to active plugins, return true if consumed
     pub fn handle_key(&mut self, key: KeyEvent, ctx: &mut PluginContext) -> bool {
         for plugin in &mut self.plugins {
             if plugin.is_active() {
-                return plugin.handle_key(key, ctx);
+                if plugin.handle_key(key, ctx) {
+                    // Plugin consumed the event
+                    return true;
+                }
+                // Plugin didn't consume, continue to next active plugin
             }
         }
         false
@@ -96,6 +105,11 @@ impl PluginManager {
         }
 
         Err(format!("Plugin '{}' not found", name))
+    }
+
+    /// Get reference to plugin by name
+    pub fn get(&self, name: &str) -> Option<&Box<dyn Plugin>> {
+        self.plugins.iter().find(|p| p.name() == name)
     }
 
     /// Get mutable reference to plugin by name
