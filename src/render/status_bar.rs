@@ -20,6 +20,7 @@ pub struct StatusBar<'a> {
     pub command_buffer: &'a str,
     pub is_active: bool,
     pub theme: &'a Theme,
+    pub lsp_status: Option<&'a str>,
 }
 
 impl<'a> Widget for StatusBar<'a> {
@@ -74,12 +75,7 @@ impl<'a> Widget for StatusBar<'a> {
             Title::from(Line::from(vec![
                 " ".into(),
                 mode_text.fg(mode_color).bold(),
-                " | Transform ".into(),
-                "<F1>".fg(ui.status_keybind_fg).bold(),
-                " Operation ".into(),
-                "<F2>".fg(ui.status_keybind_fg).bold(),
-                " File ".into(),
-                "<F3> ".fg(ui.status_keybind_fg).bold(),
+                " ".into(),
             ]))
         };
 
@@ -89,7 +85,7 @@ impl<'a> Widget for StatusBar<'a> {
             ui.border_inactive
         };
 
-        let block = Block::default()
+        let mut block = Block::default()
             .title(title.alignment(Alignment::Center))
             .title(
                 instructions
@@ -104,6 +100,23 @@ impl<'a> Widget for StatusBar<'a> {
             .borders(Borders::ALL)
             .border_set(border::THICK)
             .border_style(Style::default().fg(border_color));
+
+        // Show LSP status in top-right corner
+        if let Some(status) = self.lsp_status {
+            let lsp_color = if status == "ready" {
+                ui.status_mode_normal
+            } else {
+                ui.status_mode_insert
+            };
+            let lsp_title = Title::from(
+                format!(" {} ", status).fg(lsp_color).bold(),
+            );
+            block = block.title(
+                lsp_title
+                    .alignment(Alignment::Right)
+                    .position(Position::Top),
+            );
+        }
 
         block.render(area, buf);
     }

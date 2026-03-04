@@ -91,7 +91,7 @@ impl View {
 
         // Find word boundaries
         let mut start = col;
-        while start > 0 && chars[start - 1].is_alphanumeric() || (start > 0 && chars[start - 1] == '_') {
+        while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
             start -= 1;
         }
         let mut end = col;
@@ -131,6 +131,139 @@ impl View {
                     self.dedup_cursors();
                     return;
                 }
+            }
+        }
+    }
+
+    /// Get the selected text for a given cursor state from the buffer.
+    /// Only works for single-line selections for now.
+    pub fn get_selection_text(
+        &self,
+        cs_idx: usize,
+        buffer: &crate::buffer::YBuffer,
+    ) -> Option<String> {
+        let cs = &self.cursor_states[cs_idx];
+        let (start_row, start_col) = cs.visual_start?;
+        let end_row = cs.cursor.row;
+        let end_col = cs.cursor.col;
+
+        // Normalize start/end
+        let (s_row, s_col, e_row, e_col) =
+            if (start_row, start_col) <= (end_row, end_col) {
+                (start_row, start_col, end_row, end_col)
+            } else {
+                (end_row, end_col, start_row, start_col)
+            };
+
+        if s_row == e_row && s_row < buffer.lines.len() {
+            let line = &buffer.lines[s_row].text;
+            let from = s_col.min(line.len());
+            let to = (e_col + 1).min(line.len());
+            if from < to {
+                return Some(line[from..to].to_string());
+            }
+        } else if s_row < buffer.lines.len() && e_row < buffer.lines.len() {
+            // Multi-line selection
+            let mut result = String::new();
+            let first = &buffer.lines[s_row].text;
+            result.push_str(&first[s_col.min(first.len())..]);
+            for r in (s_row + 1)..e_row {
+                result.push('\n');
+                result.push_str(&buffer.lines[r].text);
+            }
+            result.push('\n');
+            let last = &buffer.lines[e_row].text;
+            result.push_str(&last[..(e_col + 1).min(last.len())]);
+            return Some(result);
+        }
+        None
+    }
+
+    /// Add a new cursor at the next occurrence of `needle` in the buffer,
+    /// with a visual selection covering the match. Used for Ctrl+N in visual mode.
+    pub fn add_cursor_at_next_selection_match(
+        &mut self,
+        buffer: &crate::buffer::YBuffer,
+        needle: &str,
+    ) {
+        if needle.is_empty() {
+            return;
+        }
+
+        // Search after the last cursor's position
+        let last = self.cursor_states.last().unwrap();
+        let search_start_row = last.cursor.row;
+        let search_start_col = last.cursor.col + 1;
+
+        for r in search_start_row..buffer.lines.len() {
+            let line = &buffer.lines[r].text;
+            let start_col = if r == search_start_row {
+                search_start_col.min(line.len())
+            } else {
+                0
+            };
+            if let Some(pos) = line[start_col..].find(needle) {
+                let found_col = start_col + pos;
+                let match_end = found_col + needle.len() - 1;
+
+                // Don't add duplicate
+                let already_exists = self.cursor_states.iter().any(|cs| {
+                    cs.cursor.row == r && cs.cursor.col == match_end
+                        && cs.visual_start == Some((r, found_col))
+                });
+                if !already_exists {
+                    self.cursor_states.push(CursorState {
+                        cursor: Cursor {
+                            row: r,
+                            col: match_end,
+                            desired_col: match_end,
+                        },
+                        visual_start: Some((r, found_col)),
+                    });
+                    return;
+                }
+            }
+        }
+
+        // Wrap around: search from the beginning
+        let first_cursor = &self.cursor_states[0];
+        let wrap_end_row = first_cursor
+            .visual_start
+            .map(|(r, _)| r)
+            .unwrap_or(first_cursor.cursor.row);
+        let wrap_end_col = first_cursor
+            .visual_start
+            .map(|(_, c)| c)
+            .unwrap_or(first_cursor.cursor.col);
+
+        for r in 0..=wrap_end_row.min(buffer.lines.len().saturating_sub(1)) {
+            let line = &buffer.lines[r].text;
+            let mut search_from = 0;
+            while let Some(pos) = line[search_from..].find(needle) {
+                let found_col = search_from + pos;
+                let match_end = found_col + needle.len() - 1;
+
+                // Stop if we've reached or passed the first cursor's position
+                if r == wrap_end_row && found_col >= wrap_end_col {
+                    return;
+                }
+
+                let already_exists = self.cursor_states.iter().any(|cs| {
+                    cs.cursor.row == r && cs.cursor.col == match_end
+                        && cs.visual_start == Some((r, found_col))
+                });
+                if !already_exists {
+                    self.cursor_states.push(CursorState {
+                        cursor: Cursor {
+                            row: r,
+                            col: match_end,
+                            desired_col: match_end,
+                        },
+                        visual_start: Some((r, found_col)),
+                    });
+                    return;
+                }
+                search_from = found_col + 1;
             }
         }
     }

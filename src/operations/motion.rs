@@ -31,7 +31,9 @@ impl Editor {
         for cs in view.cursor_states.iter_mut() {
             if cs.cursor.row > 0 {
                 cs.cursor.row -= 1;
-                clamp_cursor_to_line(&mut cs.cursor, buffer);
+                let col = first_non_whitespace(&buffer.lines[cs.cursor.row].text);
+                cs.cursor.col = col;
+                cs.cursor.desired_col = col;
             }
         }
     }
@@ -42,7 +44,22 @@ impl Editor {
         for cs in view.cursor_states.iter_mut() {
             if cs.cursor.row < buffer.lines.len() - 1 {
                 cs.cursor.row += 1;
-                clamp_cursor_to_line(&mut cs.cursor, buffer);
+                let col = first_non_whitespace(&buffer.lines[cs.cursor.row].text);
+                cs.cursor.col = col;
+                cs.cursor.desired_col = col;
+            }
+        }
+    }
+
+    /// Move cursor to first non-whitespace character on the current line (`^` in vim).
+    pub fn move_to_first_non_whitespace(&mut self) {
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        for cs in view.cursor_states.iter_mut() {
+            if cs.cursor.row < buffer.lines.len() {
+                let col = first_non_whitespace(&buffer.lines[cs.cursor.row].text);
+                cs.cursor.col = col;
+                cs.cursor.desired_col = col;
             }
         }
     }
@@ -191,10 +208,12 @@ impl Editor {
 
     pub fn goto_first_line(&mut self) {
         let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
         for cs in view.cursor_states.iter_mut() {
             cs.cursor.row = 0;
-            cs.cursor.col = 0;
-            cs.cursor.desired_col = 0;
+            let col = first_non_whitespace(&buffer.lines[0].text);
+            cs.cursor.col = col;
+            cs.cursor.desired_col = col;
         }
     }
 
@@ -202,10 +221,12 @@ impl Editor {
         let view = &mut self.views[self.active_view_idx];
         let buffer = self.buffer_pool.get(view.buffer_id);
         if !buffer.lines.is_empty() {
+            let last = buffer.lines.len() - 1;
             for cs in view.cursor_states.iter_mut() {
-                cs.cursor.row = buffer.lines.len() - 1;
-                cs.cursor.col = 0;
-                cs.cursor.desired_col = 0;
+                cs.cursor.row = last;
+                let col = first_non_whitespace(&buffer.lines[last].text);
+                cs.cursor.col = col;
+                cs.cursor.desired_col = col;
             }
         }
     }
@@ -252,4 +273,11 @@ pub fn clamp_cursor_to_line(cursor: &mut crate::cursor::Cursor, buffer: &crate::
         let line_len = buffer.lines[cursor.row].text.len();
         cursor.col = cursor.desired_col.min(line_len);
     }
+}
+
+/// Return the column of the first non-whitespace character, or 0 if the line is empty/all whitespace.
+fn first_non_whitespace(line: &str) -> usize {
+    line.chars()
+        .position(|c| !c.is_whitespace())
+        .unwrap_or(0)
 }

@@ -42,6 +42,8 @@ pub struct UiColors {
     pub popup_query: Color,
     pub popup_selected_fg: Color,
     pub popup_selected_bg: Color,
+    // Ghost text (inline completion preview)
+    pub ghost_text: Color,
 }
 
 /// A complete color theme

@@ -1,9 +1,17 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::editor::Editor;
 
 impl Editor {
     pub fn handle_visual_mode(&mut self, key_event: KeyEvent) {
+        // Ctrl+N: add cursor at next match of the current selection (VSCode Ctrl+D)
+        if key_event.code == KeyCode::Char('n')
+            && key_event.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.select_word_or_next_match();
+            return;
+        }
+
         match key_event.code {
             KeyCode::Esc => self.enter_normal_mode(),
             KeyCode::Char('h') => self.move_cursor_left(),
@@ -18,6 +26,7 @@ impl Editor {
             KeyCode::Char('$') => self.move_to_line_end(),
             KeyCode::Char('G') => self.goto_last_line(),
             KeyCode::Char('d') | KeyCode::Char('x') => self.delete_visual_selection(),
+            KeyCode::Char('c') | KeyCode::Char('s') => self.change_visual_selection(),
             KeyCode::Char('y') => self.yank_visual_selection(),
             KeyCode::Char('V') => self.enter_visual_line_mode(),
             KeyCode::Left => self.move_cursor_left(),

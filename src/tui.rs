@@ -1,6 +1,6 @@
 use std::io::{self, stdout, BufWriter, Stdout};
 
-use crossterm::{execute, terminal::*};
+use crossterm::{cursor::SetCursorStyle, execute, terminal::*};
 use ratatui::prelude::*;
 
 /// A type alias for the terminal type used in this application
@@ -16,7 +16,7 @@ pub fn init() -> io::Result<Tui> {
 
 /// Restore the terminal to its original state
 pub fn restore() -> io::Result<()> {
-    execute!(stdout(), LeaveAlternateScreen)?;
+    execute!(stdout(), SetCursorStyle::DefaultUserShape, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     Ok(())
 }

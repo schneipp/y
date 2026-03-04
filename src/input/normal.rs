@@ -131,12 +131,9 @@ impl Editor {
             KeyCode::Char('b') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.page_up(),
             KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.half_page_down(),
             KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.half_page_up(),
-            // Multi-cursor
+            // Multi-cursor: select word under cursor then find next (like VSCode Ctrl+D)
             KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                let view = &self.views[self.active_view_idx];
-                let buffer = self.buffer_pool.get(view.buffer_id);
-                let buffer_clone = buffer.clone();
-                self.views[self.active_view_idx].add_cursor_at_next_match(&buffer_clone);
+                self.select_word_or_next_match();
             }
             // Navigation
             KeyCode::Char('h') => self.move_cursor_left(),
@@ -148,6 +145,8 @@ impl Editor {
             KeyCode::Char('b') => self.move_word_backward(),
             KeyCode::Char('B') => self.move_WORD_backward(),
             KeyCode::Char('0') => self.move_to_line_start(),
+            KeyCode::Char('^') => self.move_to_first_non_whitespace(),
+            KeyCode::Char('_') => self.move_to_first_non_whitespace(),
             KeyCode::Char('$') => self.move_to_line_end(),
             KeyCode::Char('G') => self.goto_last_line(),
             KeyCode::Char('g') => self.pending_key = Some('g'),

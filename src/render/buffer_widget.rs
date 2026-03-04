@@ -21,6 +21,8 @@ pub struct BufferWidget<'a> {
     pub theme: &'a Theme,
     pub is_active: bool,
     pub show_line_numbers: bool,
+    /// Ghost text to render inline at cursor position (suffix text, shown dimmed)
+    pub ghost_text: Option<&'a str>,
 }
 
 impl<'a> BufferWidget<'a> {
@@ -38,30 +40,6 @@ impl<'a> BufferWidget<'a> {
             .nth(char_col)
             .map(|(byte_idx, _)| byte_idx)
             .unwrap_or(text.len())
-    }
-
-    fn render_visual_line<'b>(text: &'b str, sel_start: usize, sel_end: usize, fg: Color, bg: Color) -> Line<'b> {
-        let char_len = text.chars().count();
-        let start = sel_start.min(char_len);
-        let end = (sel_end + 1).min(char_len);
-
-        let start_byte = Self::char_col_to_byte(text, start);
-        let end_byte = Self::char_col_to_byte(text, end);
-
-        let mut spans = Vec::with_capacity(3);
-        if start_byte > 0 {
-            spans.push(Span::raw(&text[..start_byte]));
-        }
-        if start_byte < end_byte {
-            spans.push(Span::styled(
-                &text[start_byte..end_byte],
-                Style::default().fg(fg).bg(bg),
-            ));
-        }
-        if end_byte < text.len() {
-            spans.push(Span::raw(&text[end_byte..]));
-        }
-        Line::from(spans)
     }
 
     fn build_highlighted_spans<'b>(
@@ -112,6 +90,20 @@ impl<'a> Widget for BufferWidget<'a> {
             }
         }
 
+        // Collect all visual selections from all cursor states
+        let visual_selections: Vec<((usize, usize), (usize, usize))> = if *self.mode == Mode::Visual || *self.mode == Mode::VisualLine {
+            self.view
+                .cursor_states
+                .iter()
+                .filter_map(|cs| {
+                    let (sr, sc) = cs.visual_start?;
+                    Some(((sr, sc), (cs.cursor.row, cs.cursor.col)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let secondary_positions: Vec<(usize, usize)> = if self.view.has_multiple_cursors() {
             self.view
                 .cursor_states
@@ -124,7 +116,6 @@ impl<'a> Widget for BufferWidget<'a> {
             Vec::new()
         };
 
-        let visual_start = self.view.visual_start();
         let cursor = self.view.cursor();
         let content_width = area.width.saturating_sub(ln_width);
 
@@ -150,76 +141,86 @@ impl<'a> Widget for BufferWidget<'a> {
             let content_x = area.x + ln_width;
             let text = &yline.text;
 
-            let rendered = if let Some((start_row, start_col)) = visual_start {
-                if *self.mode == Mode::Visual || *self.mode == Mode::VisualLine {
-                    let end_row = cursor.row;
-                    let end_col = cursor.col;
+            // First, render the base text (syntax highlighted or plain)
+            let mut used_syntax = false;
+            if let Some(plugin) = self.plugin_manager.get("syntax_highlighter") {
+                if let Some(highlighter) = plugin
+                    .as_ref()
+                    .as_any()
+                    .downcast_ref::<crate::plugins::syntax_highlighter::SyntaxHighlighter>()
+                {
+                    let highlights = highlighter.get_line_highlights(self.buffer_id, row);
+                    if !highlights.is_empty() {
+                        let line = Self::build_highlighted_spans(text, highlights);
+                        buf.set_line(content_x, y, &line, content_width);
+                        used_syntax = true;
+                    }
+                }
+            }
+            if !used_syntax {
+                buf.set_string(content_x, y, text.as_str(), Style::default().fg(ui.foreground));
+            }
 
-                    if *self.mode == Mode::VisualLine {
-                        let (first_line, last_line) = if start_row <= end_row {
-                            (start_row, end_row)
-                        } else {
-                            (end_row, start_row)
-                        };
-                        if row >= first_line && row <= last_line {
-                            Some(Line::from(Span::styled(
-                                text.as_str(),
-                                Style::default().fg(ui.visual_selection_fg).bg(ui.visual_selection_bg),
-                            )))
-                        } else {
-                            None
-                        }
+            // Then overlay visual selections from ALL cursor states
+            for &((start_row, start_col), (end_row, end_col)) in &visual_selections {
+                if *self.mode == Mode::VisualLine {
+                    let (first_line, last_line) = if start_row <= end_row {
+                        (start_row, end_row)
                     } else {
-                        let (start_pos, end_pos) =
-                            if (start_row, start_col) <= (end_row, end_col) {
-                                ((start_row, start_col), (end_row, end_col))
-                            } else {
-                                ((end_row, end_col), (start_row, start_col))
-                            };
-
-                        if row >= start_pos.0 && row <= end_pos.0 {
-                            let sel_start = if row == start_pos.0 { start_pos.1 } else { 0 };
-                            let sel_end = if row == end_pos.0 {
-                                end_pos.1
-                            } else {
-                                text.chars().count().saturating_sub(1)
-                            };
-                            Some(Self::render_visual_line(
-                                text, sel_start, sel_end,
-                                ui.visual_selection_fg, ui.visual_selection_bg,
-                            ))
-                        } else {
-                            None
+                        (end_row, start_row)
+                    };
+                    if row >= first_line && row <= last_line {
+                        let sel_style = Style::default()
+                            .fg(ui.visual_selection_fg)
+                            .bg(ui.visual_selection_bg);
+                        let char_count = text.chars().count();
+                        for c in 0..char_count.max(1) {
+                            let sx = content_x + c as u16;
+                            if sx < area.x + area.width {
+                                let cell = buf.get_mut(sx, y);
+                                cell.set_style(sel_style);
+                            }
                         }
                     }
                 } else {
-                    None
-                }
-            } else {
-                None
-            };
+                    // Visual (character) mode
+                    let (s, e) = if (start_row, start_col) <= (end_row, end_col) {
+                        ((start_row, start_col), (end_row, end_col))
+                    } else {
+                        ((end_row, end_col), (start_row, start_col))
+                    };
 
-            if let Some(line) = rendered {
-                buf.set_line(content_x, y, &line, content_width);
-            } else {
-                let mut used_syntax = false;
-                if let Some(plugin) = self.plugin_manager.get("syntax_highlighter") {
-                    if let Some(highlighter) = plugin
-                        .as_ref()
-                        .as_any()
-                        .downcast_ref::<crate::plugins::syntax_highlighter::SyntaxHighlighter>()
-                    {
-                        let highlights = highlighter.get_line_highlights(self.buffer_id, row);
-                        if !highlights.is_empty() {
-                            let line = Self::build_highlighted_spans(text, highlights);
-                            buf.set_line(content_x, y, &line, content_width);
-                            used_syntax = true;
+                    if row >= s.0 && row <= e.0 {
+                        let sel_start = if row == s.0 { s.1 } else { 0 };
+                        let sel_end = if row == e.0 {
+                            e.1
+                        } else {
+                            text.chars().count().saturating_sub(1)
+                        };
+                        let sel_style = Style::default()
+                            .fg(ui.visual_selection_fg)
+                            .bg(ui.visual_selection_bg);
+                        for c in sel_start..=sel_end {
+                            let sx = content_x + c as u16;
+                            if sx < area.x + area.width {
+                                let cell = buf.get_mut(sx, y);
+                                cell.set_style(sel_style);
+                            }
                         }
                     }
                 }
+            }
 
-                if !used_syntax {
-                    buf.set_string(content_x, y, text.as_str(), Style::default().fg(ui.foreground));
+            // Render ghost text on the cursor line
+            if self.is_active && row == cursor.row {
+                if let Some(ghost) = self.ghost_text {
+                    let ghost_x = content_x + cursor.col as u16;
+                    let ghost_style = Style::default().fg(ui.ghost_text).bg(ui.background);
+                    let available = (area.x + area.width).saturating_sub(ghost_x) as usize;
+                    if available > 0 {
+                        let display: String = ghost.chars().take(available).collect();
+                        buf.set_string(ghost_x, y, &display, ghost_style);
+                    }
                 }
             }
 

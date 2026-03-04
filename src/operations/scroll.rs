@@ -1,5 +1,4 @@
 use crate::editor::Editor;
-use crate::operations::motion::clamp_cursor_to_line;
 
 impl Editor {
     pub fn page_down(&mut self) {
@@ -10,8 +9,9 @@ impl Editor {
 
         let new_row = (cs.cursor.row + viewport_height).min(buffer.lines.len().saturating_sub(1));
         cs.cursor.row = new_row;
-        cs.cursor.col = 0;
-        cs.cursor.desired_col = 0;
+        let col = first_non_ws(&buffer.lines[new_row].text);
+        cs.cursor.col = col;
+        cs.cursor.desired_col = col;
         view.scroll_offset = (view.scroll_offset + viewport_height)
             .min(buffer.lines.len().saturating_sub(viewport_height));
     }
@@ -19,12 +19,14 @@ impl Editor {
     pub fn page_up(&mut self) {
         let viewport_height = 30;
         let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
         let cs = &mut view.cursor_states[view.primary_cursor_idx];
 
         let new_row = cs.cursor.row.saturating_sub(viewport_height);
         cs.cursor.row = new_row;
-        cs.cursor.col = 0;
-        cs.cursor.desired_col = 0;
+        let col = first_non_ws(&buffer.lines[new_row].text);
+        cs.cursor.col = col;
+        cs.cursor.desired_col = col;
         view.scroll_offset = view.scroll_offset.saturating_sub(viewport_height);
     }
 
@@ -36,7 +38,9 @@ impl Editor {
 
         let new_row = (cs.cursor.row + viewport_height).min(buffer.lines.len().saturating_sub(1));
         cs.cursor.row = new_row;
-        clamp_cursor_to_line(&mut cs.cursor, buffer);
+        let col = first_non_ws(&buffer.lines[new_row].text);
+        cs.cursor.col = col;
+        cs.cursor.desired_col = col;
     }
 
     pub fn half_page_up(&mut self) {
@@ -47,7 +51,9 @@ impl Editor {
 
         let new_row = cs.cursor.row.saturating_sub(viewport_height);
         cs.cursor.row = new_row;
-        clamp_cursor_to_line(&mut cs.cursor, buffer);
+        let col = first_non_ws(&buffer.lines[new_row].text);
+        cs.cursor.col = col;
+        cs.cursor.desired_col = col;
     }
 
     pub fn adjust_scroll(&mut self, viewport_height: usize) {
@@ -59,4 +65,8 @@ impl Editor {
             view.scroll_offset = cursor_row.saturating_sub(viewport_height - 1);
         }
     }
+}
+
+fn first_non_ws(line: &str) -> usize {
+    line.chars().position(|c| !c.is_whitespace()).unwrap_or(0)
 }

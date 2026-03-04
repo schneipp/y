@@ -48,6 +48,16 @@ impl Editor {
                 "q!" => self.exit = true,
                 "sp" => self.split_horizontal(),
                 "vs" => self.split_vertical(),
+                "lspsetup" => {
+                    self.show_lsp_setup();
+                    self.command_buffer.clear();
+                    return;
+                }
+                "lspinfo" => {
+                    self.show_lsp_info();
+                    self.command_buffer.clear();
+                    return;
+                }
                 _ => {}
             }
         }

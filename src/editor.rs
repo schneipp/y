@@ -3,14 +3,21 @@ use std::io;
 
 use std::time::Duration;
 
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::{
     layout::Rect,
     prelude::*,
 };
 
+use crossterm::event::KeyModifiers;
+use ratatui::widgets::Clear;
+
 use crate::buffer::{BufferPool, YBuffer, YLine};
+use crate::completion::{self, CompletionState};
+use crate::config::Config;
 use crate::layout::{SplitDirection, SplitNode};
+use crate::lsp::LspManager;
 use crate::mode::{Mode, YankRegister};
 use crate::plugins;
 use crate::render::buffer_widget::BufferWidget;
@@ -18,7 +25,6 @@ use crate::render::status_bar::StatusBar;
 use crate::theme::ThemeManager;
 use crate::view::View;
 
-#[derive(Debug)]
 pub struct Editor {
     pub exit: bool,
     pub buffer_pool: BufferPool,
@@ -45,10 +51,20 @@ pub struct Editor {
     // Buffer picker: maps fuzzy finder selection index to BufferId
     pub buffer_picker_ids: Option<Vec<crate::buffer::BufferId>>,
     pub theme_picker_active: bool,
+    pub config: Config,
+    pub lsp_manager: LspManager,
+    pub lsp_picker_active: bool,
+    pub completion: CompletionState,
 }
 
 impl Editor {
     pub fn default() -> Self {
+        let mut config = Config::load();
+        config.ensure_known_servers();
+        Self::with_config(config)
+    }
+
+    pub fn with_config(config: Config) -> Self {
         let buffer = YBuffer::from(vec![YLine::new()]);
 
         let mut plugin_manager = plugins::PluginManager::new();
@@ -63,6 +79,7 @@ impl Editor {
         let buffer_id = buffer_pool.add_with_filename(buffer, None);
         let view = View::new(0, buffer_id);
 
+        let theme_name = config.theme.clone();
         let mut editor = Self {
             exit: false,
             buffer_pool,
@@ -87,16 +104,27 @@ impl Editor {
             fuzzy_selected: 0,
             buffer_picker_ids: None,
             theme_picker_active: false,
+            config,
+            lsp_manager: LspManager::new(),
+            lsp_picker_active: false,
+            completion: CompletionState::new(),
         };
+        editor.switch_theme(&theme_name);
         editor.apply_theme_to_plugins();
         editor
     }
 
     pub fn from_file(filename: &str) -> io::Result<Self> {
+        let mut config = Config::load();
+        config.ensure_known_servers();
+        Self::from_file_with_config(filename, config)
+    }
+
+    pub fn from_file_with_config(filename: &str, config: Config) -> io::Result<Self> {
         let content = match fs::read_to_string(filename) {
             Ok(content) => content,
             Err(_) => {
-                let mut editor = Self::default();
+                let mut editor = Self::with_config(config);
                 editor.filename = Some(filename.to_string());
                 return Ok(editor);
             }
@@ -111,10 +139,33 @@ impl Editor {
                 .collect()
         };
 
-        let mut editor = Self::default();
+        let mut editor = Self::with_config(config);
         *editor.buffer_pool.get_mut(0) = YBuffer::from(lines);
         editor.buffer_pool.get_entry_mut(0).filename = Some(filename.to_string());
         editor.filename = Some(filename.to_string());
+
+        // Start LSP server for this file if applicable
+        if let Some(ext) = std::path::Path::new(filename).extension().and_then(|e| e.to_str()) {
+            let root = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            editor.lsp_manager.ensure_server_for_extension(ext, &editor.config, &root);
+
+            // Send didOpen if server config exists
+            if let Some(server_config) = editor.config.server_for_extension(ext) {
+                let server_name = server_config.name.clone();
+                let language = server_config.language.clone();
+                let abs_path = std::fs::canonicalize(filename)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(filename));
+                let uri = format!("file://{}", abs_path.display());
+                let text: String = editor.buffer_pool.get(0).lines.iter()
+                    .map(|l| l.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                editor.lsp_manager.did_open(&server_name, &uri, &language, &text);
+            }
+        }
+
         Ok(editor)
     }
 
@@ -150,6 +201,8 @@ impl Editor {
     pub fn switch_theme(&mut self, name: &str) {
         if self.theme_manager.set_theme(name).is_ok() {
             self.apply_theme_to_plugins();
+            self.config.theme = name.to_string();
+            self.config.save();
         }
     }
 
@@ -214,6 +267,66 @@ impl Editor {
         let row = view.cursor().row;
         let col = view.cursor().col;
         view.set_visual_start(Some((row, col)));
+    }
+
+    /// VSCode Ctrl+D behavior:
+    /// - In normal mode: select the word under cursor (enters visual mode)
+    /// - In visual mode: find next occurrence of current selection, add cursor there
+    pub fn select_word_or_next_match(&mut self) {
+        if self.mode == Mode::Visual {
+            self.add_visual_cursor_at_next_match();
+            return;
+        }
+
+        // Normal mode: select word under cursor → enter visual mode
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let primary = &view.cursor_states[view.primary_cursor_idx].cursor;
+        let row = primary.row;
+        let col = primary.col;
+
+        if row >= buffer.lines.len() {
+            return;
+        }
+        let line = &buffer.lines[row].text;
+        let chars: Vec<char> = line.chars().collect();
+        if col >= chars.len() {
+            return;
+        }
+
+        // Find word boundaries
+        let mut start = col;
+        while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+            start -= 1;
+        }
+        let mut end = col;
+        while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+        if start == end {
+            return;
+        }
+
+        // Select the word: visual_start at word start, cursor at word end
+        let cs = &mut view.cursor_states[view.primary_cursor_idx];
+        cs.visual_start = Some((row, start));
+        cs.cursor.col = end - 1;
+        cs.cursor.desired_col = end - 1;
+        self.mode = Mode::Visual;
+    }
+
+    /// Ctrl+N in visual mode: find next occurrence of the selection and add a cursor there.
+    pub fn add_visual_cursor_at_next_match(&mut self) {
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+
+        // Get the selected text from the primary cursor
+        let needle = match view.get_selection_text(view.primary_cursor_idx, buffer) {
+            Some(t) => t,
+            None => return,
+        };
+
+        view.add_cursor_at_next_selection_match(buffer, &needle);
     }
 
     pub fn enter_command_mode(&mut self) {
@@ -311,6 +424,28 @@ impl Editor {
         // Update editor-level filename to match active buffer
         self.filename = self.buffer_pool.get_entry(buffer_id).filename.clone();
         self.modified = self.buffer_pool.get_entry(buffer_id).modified;
+
+        // Start LSP server for this file if applicable
+        if let Some(ext) = std::path::Path::new(filename).extension().and_then(|e| e.to_str()) {
+            let root = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            self.lsp_manager.ensure_server_for_extension(ext, &self.config, &root);
+
+            if let Some(server_config) = self.config.server_for_extension(ext) {
+                let server_name = server_config.name.clone();
+                let language = server_config.language.clone();
+                let abs_path = std::fs::canonicalize(filename)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(filename));
+                let uri = format!("file://{}", abs_path.display());
+                let buffer = self.buffer_pool.get(buffer_id);
+                let text: String = buffer.lines.iter()
+                    .map(|l| l.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.lsp_manager.did_open(&server_name, &uri, &language, &text);
+            }
+        }
     }
 
     /// Switch the active view to show a specific buffer by ID
@@ -437,6 +572,107 @@ impl Editor {
         }
     }
 
+    /// Show LSP debug info via fuzzy finder modal
+    pub fn show_lsp_info(&mut self) {
+        let items = self.lsp_manager.debug_info();
+        if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                fuzzy_plugin.activate_with_items(" LSP Info ", items);
+                self.mode = Mode::FuzzyFinder;
+                self.buffer_picker_ids = None;
+                self.theme_picker_active = false;
+                self.lsp_picker_active = false;
+            }
+        }
+    }
+
+    /// Show LSP setup picker via fuzzy finder
+    pub fn show_lsp_setup(&mut self) {
+        let items: Vec<String> = self.config.lsp.servers.iter().map(|s| {
+            let status = if crate::lsp::types::is_binary_available(&s.binary) {
+                if s.enabled { "enabled" } else { "disabled" }
+            } else {
+                "not found"
+            };
+            format!("{} ({}) [{}]", s.name, s.language, status)
+        }).collect();
+
+        if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                fuzzy_plugin.activate_with_items(" LSP Servers ", items);
+                self.mode = Mode::FuzzyFinder;
+                self.buffer_picker_ids = None;
+                self.theme_picker_active = false;
+                self.lsp_picker_active = true;
+            }
+        }
+    }
+
+    fn handle_lsp_picker_result(&mut self) {
+        // Check if fuzzy finder was dismissed (Esc clears custom_items)
+        let was_cancelled = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
+            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                !fuzzy_plugin.is_custom_mode()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if was_cancelled {
+            self.lsp_picker_active = false;
+            return;
+        }
+
+        let selection_made = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
+            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                fuzzy_plugin.is_custom_mode() && !fuzzy_plugin.cached_render_data.borrow().active
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !selection_made {
+            return;
+        }
+
+        // Get selected item from filtered results
+        let selected_name = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
+            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                let idx = fuzzy_plugin.get_selected_index();
+                let render_data = fuzzy_plugin.cached_render_data.borrow();
+                render_data.results.get(idx).cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(display_str) = selected_name {
+            // Parse server name from "name (language) [status]"
+            if let Some(server_name) = display_str.split(' ').next() {
+                if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == server_name) {
+                    server.enabled = !server.enabled;
+                    self.config.save();
+                }
+            }
+        }
+
+        // Clean up fuzzy finder state
+        if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                fuzzy_plugin.custom_items = None;
+            }
+        }
+
+        // Re-open the picker to show updated state
+        self.show_lsp_setup();
+    }
+
     /// Check if the fuzzy finder plugin has a pending file-open action and handle it
     fn handle_fuzzy_finder_open(&mut self) {
         let pending = if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
@@ -485,23 +721,29 @@ impl Editor {
     // Main loop with event coalescing
     pub fn run(&mut self, terminal: &mut crate::tui::Tui) -> io::Result<()> {
         while !self.exit {
+            self.lsp_manager.poll();
+            self.process_lsp_responses();
+
             let viewport_height = terminal.get_frame().size().height.saturating_sub(2) as usize;
             self.adjust_scroll(viewport_height);
 
             self.sync_syntax_highlights();
             terminal.draw(|frame| self.render_frame(frame))?;
 
-            // Wait for at least one event
-            self.handle_events()?;
-
-            // Drain all pending events before re-rendering (event coalescing)
-            while event::poll(Duration::ZERO)? {
+            // Poll with timeout so LSP messages are processed even while idle
+            if event::poll(Duration::from_millis(100))? {
                 self.handle_events()?;
-                if self.exit {
-                    break;
+
+                // Drain all pending events before re-rendering (event coalescing)
+                while event::poll(Duration::ZERO)? {
+                    self.handle_events()?;
+                    if self.exit {
+                        break;
+                    }
                 }
             }
         }
+        self.lsp_manager.shutdown_all();
         Ok(())
     }
 
@@ -535,6 +777,19 @@ impl Editor {
                 let view_modified = buf_entry.modified || self.modified;
 
                 let theme = self.theme_manager.current();
+
+                // Compute LSP status for this view's buffer
+                let lsp_status_string = buf_entry.filename.as_ref().and_then(|f| {
+                    std::path::Path::new(f)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .and_then(|ext| {
+                            self.lsp_manager
+                                .status_for_extension(ext, &self.config)
+                                .map(|(name, st)| format!("{}: {}", name, st))
+                        })
+                });
+
                 let status = StatusBar {
                     mode: &self.mode,
                     filename: &view_filename,
@@ -545,6 +800,7 @@ impl Editor {
                     command_buffer: &self.command_buffer,
                     is_active,
                     theme,
+                    lsp_status: lsp_status_string.as_deref(),
                 };
                 status.render(*rect, frame.buffer_mut());
 
@@ -554,6 +810,13 @@ impl Editor {
                     y: rect.y + 1,
                     width: rect.width.saturating_sub(2),
                     height: rect.height.saturating_sub(2),
+                };
+
+                // Ghost text only for the active view in insert mode
+                let ghost = if is_active && self.mode == Mode::Insert {
+                    self.completion.ghost_text()
+                } else {
+                    None
                 };
 
                 // Render buffer content
@@ -566,6 +829,7 @@ impl Editor {
                     theme,
                     is_active,
                     show_line_numbers: true,
+                    ghost_text: ghost,
                 };
                 widget.render(inner, frame.buffer_mut());
             }
@@ -581,6 +845,14 @@ impl Editor {
             filename: &self.filename,
         };
         self.plugin_manager.render_readonly(area, frame.buffer_mut(), &ctx);
+
+        // Render completion popup
+        if self.completion.active && !self.completion.filtered.is_empty() {
+            let active_view_id = self.views[self.active_view_idx].id;
+            if let Some((_, rect)) = view_rects.iter().find(|(id, _)| *id == active_view_id) {
+                self.render_completion_popup(frame.buffer_mut(), rect, area);
+            }
+        }
 
         // Set terminal cursor position
         let active_view = &self.views[self.active_view_idx];
@@ -616,6 +888,14 @@ impl Editor {
             let y = rect.y + 1 + (active_view.cursor().row.saturating_sub(active_view.scroll_offset)) as u16;
             frame.set_cursor(x, y);
         }
+
+        // Set cursor shape based on mode (block in normal, bar in insert)
+        let cursor_style = match self.mode {
+            Mode::Insert => SetCursorStyle::SteadyBar,
+            Mode::Command | Mode::FuzzyFinder => SetCursorStyle::SteadyBar,
+            _ => SetCursorStyle::SteadyBlock,
+        };
+        let _ = crossterm::execute!(std::io::stdout(), cursor_style);
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
@@ -629,6 +909,50 @@ impl Editor {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
+        // Ctrl+L accepts ghost text (first suggestion) — works even without popup visible
+        // This keybinding is reserved for AI completions in the future.
+        if self.mode == Mode::Insert
+            && key_event.code == crossterm::event::KeyCode::Char('l')
+            && key_event.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            if self.completion.ghost_text().is_some() {
+                self.accept_ghost_text();
+                return;
+            }
+        }
+
+        // Handle completion popup keys when popup is active
+        if self.completion.active {
+            match key_event.code {
+                crossterm::event::KeyCode::Enter => {
+                    self.accept_completion();
+                    return;
+                }
+                crossterm::event::KeyCode::Char('n')
+                    if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.completion.navigate(1);
+                    return;
+                }
+                crossterm::event::KeyCode::Char('p')
+                    if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.completion.navigate(-1);
+                    return;
+                }
+                crossterm::event::KeyCode::Esc => {
+                    self.completion.dismiss();
+                    // Fall through to mode handler
+                }
+                crossterm::event::KeyCode::Char(_) | crossterm::event::KeyCode::Backspace => {
+                    // Let chars and backspace through; we'll update the filter after mode dispatch
+                }
+                _ => {
+                    self.completion.dismiss();
+                }
+            }
+        }
+
         // Check if any plugin is active and should handle the event
         if self.plugin_manager.has_active_plugin() {
             let view = &mut self.views[self.active_view_idx];
@@ -653,6 +977,10 @@ impl Editor {
                 if self.theme_picker_active {
                     self.handle_theme_picker_result();
                 }
+                // Check if LSP picker just completed a selection
+                if self.lsp_picker_active {
+                    self.handle_lsp_picker_result();
+                }
                 // Check if fuzzy finder wants to open a file (only in active view)
                 self.handle_fuzzy_finder_open();
                 return;
@@ -667,5 +995,364 @@ impl Editor {
             Mode::Command => self.handle_command_mode(key_event),
             Mode::FuzzyFinder => {}
         }
+
+        // After insert mode keystrokes, update completion
+        if self.mode == Mode::Insert {
+            match key_event.code {
+                crossterm::event::KeyCode::Char(_) | crossterm::event::KeyCode::Backspace => {
+                    self.post_insert_completion_update();
+                }
+                _ => {}
+            }
+        }
     }
+
+    // ── Completion helpers ──────────────────────────────────────────────
+
+    /// Get the word prefix at the cursor position. Returns (word_start_col, prefix_string).
+    fn get_word_prefix_at_cursor(&self) -> (usize, String) {
+        let view = &self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let row = view.cursor().row;
+        let col = view.cursor().col;
+
+        if row >= buffer.lines.len() {
+            return (col, String::new());
+        }
+
+        let line = &buffer.lines[row].text;
+        let end = col.min(line.len());
+        let before_cursor = &line[..end];
+
+        let word_start = before_cursor
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+
+        let prefix = before_cursor[word_start..].to_string();
+        (word_start, prefix)
+    }
+
+    /// Called after each char/backspace in insert mode to request or update completions.
+    fn post_insert_completion_update(&mut self) {
+        let (word_start, prefix) = self.get_word_prefix_at_cursor();
+        let view = &self.views[self.active_view_idx];
+        let cursor_row = view.cursor().row;
+
+        // If popup is active, update the filter with the new prefix
+        if self.completion.active {
+            if cursor_row != self.completion.trigger_row {
+                self.completion.dismiss();
+            } else {
+                self.completion.update_prefix(&prefix);
+            }
+        }
+
+        // Request new completions from LSP if we have a prefix
+        if prefix.is_empty() {
+            if !self.completion.active {
+                return;
+            }
+        }
+
+        self.request_lsp_completion(cursor_row, word_start, &prefix);
+    }
+
+    /// Send didChange + textDocument/completion to the LSP server.
+    fn request_lsp_completion(&mut self, cursor_row: usize, word_start: usize, prefix: &str) {
+        let view = &self.views[self.active_view_idx];
+        let buffer_id = view.buffer_id;
+        let cursor_col = view.cursor().col;
+
+        // Get filename and extension
+        let filename = match self.buffer_pool.get_entry(buffer_id).filename.clone() {
+            Some(f) => f,
+            None => return,
+        };
+        let ext = match std::path::Path::new(&filename)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            Some(e) => e.to_string(),
+            None => return,
+        };
+
+        let server_config = match self.config.server_for_extension(&ext) {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let abs_path = std::fs::canonicalize(&filename)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&filename));
+        let uri = format!("file://{}", abs_path.display());
+
+        // Send didChange with full buffer text
+        let buffer = self.buffer_pool.get(buffer_id);
+        let text: String = buffer
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let version = self.completion.bump_version();
+        self.lsp_manager
+            .did_change(&server_config.name, &uri, version, &text);
+
+        // Send completion request
+        if let Some(id) =
+            self.lsp_manager
+                .request_completion(&server_config.name, &uri, cursor_row, cursor_col)
+        {
+            self.completion.pending_request_id = Some(id);
+            self.completion.trigger_row = cursor_row;
+            self.completion.trigger_col = word_start;
+            self.completion.prefix = prefix.to_string();
+        }
+    }
+
+    /// Process LSP responses and route completion results to CompletionState.
+    fn process_lsp_responses(&mut self) {
+        let responses: Vec<_> = self.lsp_manager.pending_responses.drain(..).collect();
+        for resp in responses {
+            // Check if this is a completion response we're waiting for
+            if self.completion.pending_request_id == Some(resp.id) {
+                self.completion.pending_request_id = None;
+                if let Some(result) = resp.result {
+                    let items = parse_completion_response(&result);
+                    if !items.is_empty() {
+                        let (word_start, prefix) = self.get_word_prefix_at_cursor();
+                        let view = &self.views[self.active_view_idx];
+                        let cursor_row = view.cursor().row;
+                        self.completion
+                            .activate(items, cursor_row, word_start, &prefix);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Accept the ghost text (first filtered completion item) via Ctrl+L.
+    fn accept_ghost_text(&mut self) {
+        // Ghost text is always the first filtered item
+        let item = match self.completion.filtered.first()
+            .and_then(|&idx| self.completion.items.get(idx))
+            .cloned()
+        {
+            Some(i) => i,
+            None => {
+                self.completion.dismiss();
+                return;
+            }
+        };
+
+        let text = completion::strip_snippets(item.text_to_insert());
+        let trigger_col = self.completion.trigger_col;
+        let trigger_row = self.completion.trigger_row;
+
+        let view = &self.views[self.active_view_idx];
+        let cursor_row = view.cursor().row;
+        let cursor_col = view.cursor().col;
+
+        if cursor_row != trigger_row {
+            self.completion.dismiss();
+            return;
+        }
+
+        let buffer = self.active_buffer_mut();
+        if trigger_row < buffer.lines.len() {
+            let line = &buffer.lines[trigger_row].text;
+            let before = line[..trigger_col.min(line.len())].to_string();
+            let after = line[cursor_col.min(line.len())..].to_string();
+            buffer.lines[trigger_row].text = format!("{}{}{}", before, text, after);
+        }
+
+        let new_col = trigger_col + text.len();
+        let view = &mut self.views[self.active_view_idx];
+        let primary = view.primary_cursor_idx;
+        view.cursor_states[primary].cursor.col = new_col;
+        view.cursor_states[primary].cursor.desired_col = new_col;
+
+        self.completion.dismiss();
+    }
+
+    /// Accept the currently selected completion item.
+    fn accept_completion(&mut self) {
+        let item = match self.completion.selected_item().cloned() {
+            Some(i) => i,
+            None => {
+                self.completion.dismiss();
+                return;
+            }
+        };
+
+        let text = completion::strip_snippets(item.text_to_insert());
+        let trigger_col = self.completion.trigger_col;
+        let trigger_row = self.completion.trigger_row;
+
+        let view = &self.views[self.active_view_idx];
+        let cursor_row = view.cursor().row;
+        let cursor_col = view.cursor().col;
+
+        if cursor_row != trigger_row {
+            self.completion.dismiss();
+            return;
+        }
+
+        // Replace from trigger_col to cursor_col with completion text
+        let buffer = self.active_buffer_mut();
+        if trigger_row < buffer.lines.len() {
+            let line = &buffer.lines[trigger_row].text;
+            let before = line[..trigger_col.min(line.len())].to_string();
+            let after = line[cursor_col.min(line.len())..].to_string();
+            buffer.lines[trigger_row].text = format!("{}{}{}", before, text, after);
+        }
+
+        // Move cursor to end of inserted text
+        let new_col = trigger_col + text.len();
+        let view = &mut self.views[self.active_view_idx];
+        let primary = view.primary_cursor_idx;
+        view.cursor_states[primary].cursor.col = new_col;
+        view.cursor_states[primary].cursor.desired_col = new_col;
+
+        self.completion.dismiss();
+    }
+
+    /// Render the completion popup near the cursor.
+    fn render_completion_popup(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        view_rect: &Rect,
+        area: Rect,
+    ) {
+        let view = &self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let theme = self.theme_manager.current();
+
+        // Line number gutter width
+        let max_line = buffer.lines.len();
+        let digits = if max_line == 0 {
+            1
+        } else {
+            (max_line as f64).log10() as u16 + 1
+        };
+        let ln_width = digits + 1;
+
+        let cursor_screen_y =
+            view_rect.y + 1 + (view.cursor().row.saturating_sub(view.scroll_offset)) as u16;
+        let popup_x = view_rect.x + 1 + ln_width + self.completion.trigger_col as u16;
+
+        let max_visible = 10usize;
+        let visible_count = self.completion.filtered.len().min(max_visible);
+        let popup_height = visible_count as u16 + 2; // borders
+
+        // Width based on longest label
+        let max_label_len = self
+            .completion
+            .filtered
+            .iter()
+            .filter_map(|&idx| self.completion.items.get(idx))
+            .map(|item| {
+                let kind_len = item.kind.map(|k| k.short_label().len() + 1).unwrap_or(0);
+                item.label.len() + kind_len
+            })
+            .max()
+            .unwrap_or(20);
+        let popup_width = (max_label_len as u16 + 4).max(15).min(60); // +4 for borders+padding
+
+        // Position: below cursor, or above if not enough space
+        let popup_y = if cursor_screen_y + 1 + popup_height <= area.height {
+            cursor_screen_y + 1
+        } else {
+            cursor_screen_y.saturating_sub(popup_height)
+        };
+
+        let popup_x = popup_x.min(area.width.saturating_sub(popup_width));
+
+        let popup_rect = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width.min(area.width.saturating_sub(popup_x)),
+            height: popup_height.min(area.height.saturating_sub(popup_y)),
+        };
+
+        // Clear background
+        Clear.render(popup_rect, buf);
+
+        // Draw border
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(theme.ui.popup_border))
+            .style(Style::default().bg(theme.ui.background));
+        let inner = block.inner(popup_rect);
+        block.render(popup_rect, buf);
+
+        // Calculate scroll offset for the list
+        let scroll_offset = if self.completion.selected >= max_visible {
+            self.completion.selected - max_visible + 1
+        } else {
+            0
+        };
+
+        // Render items
+        let inner_width = inner.width as usize;
+        for (i, &item_idx) in self
+            .completion
+            .filtered
+            .iter()
+            .skip(scroll_offset)
+            .take(visible_count)
+            .enumerate()
+        {
+            if let Some(item) = self.completion.items.get(item_idx) {
+                let y = inner.y + i as u16;
+                let is_selected = scroll_offset + i == self.completion.selected;
+
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.ui.popup_selected_fg)
+                        .bg(theme.ui.popup_selected_bg)
+                } else {
+                    Style::default()
+                        .fg(theme.ui.foreground)
+                        .bg(theme.ui.background)
+                };
+
+                // Build the display line: "kd label"
+                let kind_str = item
+                    .kind
+                    .map(|k| format!("{} ", k.short_label()))
+                    .unwrap_or_default();
+                let display = format!(
+                    " {}{}",
+                    kind_str,
+                    &item.label[..item.label.len().min(inner_width.saturating_sub(kind_str.len() + 1))]
+                );
+
+                // Pad to full width
+                let padded = format!("{:<width$}", display, width = inner_width);
+                buf.set_string(inner.x, y, &padded, style);
+            }
+        }
+    }
+}
+
+/// Parse LSP completion response into CompletionItems.
+fn parse_completion_response(result: &serde_json::Value) -> Vec<completion::CompletionItem> {
+    // Response can be CompletionList { items: [...] } or directly [...]
+    let items_value = if let Some(items) = result.get("items") {
+        items
+    } else if result.is_array() {
+        result
+    } else {
+        return Vec::new();
+    };
+
+    items_value
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(completion::CompletionItem::from_lsp)
+                .collect()
+        })
+        .unwrap_or_default()
 }
