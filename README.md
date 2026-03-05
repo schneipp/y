@@ -1,10 +1,10 @@
 ```
 
-  \\   //
-   \\ //
+  _   _
+  \ \ / /
+   \ v /
     | |
-    | |
-    |_|
+    |_|    (why editor)
 
 ```
 
@@ -12,7 +12,7 @@
 
 A terminal editor for people who want vim's power without vim's complexity. Think microvim. Think chadnano. Think "I just want to edit code fast."
 
-Built in Rust. Starts instantly. Vim grammar baked in. LSP and tree-sitter out of the box. No 200-line config file.
+Built in Rust. Starts instantly. Vim grammar baked in. LSP and tree-sitter out of the box. No 200-line config file. And if vim scares you — there's a **normie mode** with `Ctrl+S`, `Ctrl+F`, `Ctrl+Z` and all that. No judgement.
 
 ## Install
 
