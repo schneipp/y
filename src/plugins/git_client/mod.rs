@@ -33,6 +33,7 @@ pub struct GitClientPlugin {
     commit_message: String,
     branch_name: String,
     error_message: Option<String>,
+    success_message: Option<String>,
     popup_colors: PopupColors,
 }
 
@@ -70,6 +71,7 @@ impl GitClientPlugin {
             commit_message: String::new(),
             branch_name: String::new(),
             error_message: None,
+            success_message: None,
             popup_colors: PopupColors::default(),
         }
     }
@@ -84,6 +86,7 @@ impl GitClientPlugin {
         self.selected = 0;
         self.scroll_offset = 0;
         self.error_message = None;
+        self.success_message = None;
         self.commit_message.clear();
         self.refresh_status();
         self.refresh_branch();
@@ -210,6 +213,9 @@ impl GitClientPlugin {
                 if out.status.success() {
                     self.commit_message.clear();
                     self.error_message = None;
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let detail = stdout.lines().next().unwrap_or("done");
+                    self.success_message = Some(format!("Committed: {}", detail.trim()));
                 } else {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     self.error_message = Some(format!("Commit failed: {}", stderr.lines().next().unwrap_or("")));
@@ -224,6 +230,8 @@ impl GitClientPlugin {
     }
 
     fn push(&mut self) {
+        self.success_message = None;
+        self.error_message = None;
         let result = std::process::Command::new("git")
             .args(["push"])
             .output();
@@ -234,7 +242,11 @@ impl GitClientPlugin {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     self.error_message = Some(format!("Push failed: {}", stderr.lines().next().unwrap_or("")));
                 } else {
-                    self.error_message = None;
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let detail = stderr.lines()
+                        .find(|l| l.contains("->"))
+                        .unwrap_or("up to date");
+                    self.success_message = Some(format!("Pushed: {}", detail.trim()));
                 }
             }
             Err(e) => {
@@ -244,6 +256,8 @@ impl GitClientPlugin {
     }
 
     fn pull(&mut self) {
+        self.success_message = None;
+        self.error_message = None;
         let result = std::process::Command::new("git")
             .args(["pull"])
             .output();
@@ -254,7 +268,9 @@ impl GitClientPlugin {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     self.error_message = Some(format!("Pull failed: {}", stderr.lines().next().unwrap_or("")));
                 } else {
-                    self.error_message = None;
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let detail = stdout.lines().next().unwrap_or("done");
+                    self.success_message = Some(format!("Pulled: {}", detail.trim()));
                 }
             }
             Err(e) => {
@@ -274,9 +290,17 @@ impl GitClientPlugin {
         ]));
         lines.push(Line::from(""));
 
+        if let Some(ref msg) = self.success_message {
+            lines.push(Line::from(Span::styled(
+                format!("  ✓ {}", msg),
+                Style::default().fg(Color::Green),
+            )));
+            lines.push(Line::from(""));
+        }
+
         if let Some(ref err) = self.error_message {
             lines.push(Line::from(Span::styled(
-                format!("  {}", err),
+                format!("  ✗ {}", err),
                 Style::default().fg(Color::Red),
             )));
             lines.push(Line::from(""));
@@ -533,6 +557,7 @@ impl Plugin for GitClientPlugin {
                         self.refresh_status();
                         self.refresh_branch();
                         self.error_message = None;
+                        self.success_message = None;
                     }
                     _ => {}
                 }
