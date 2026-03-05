@@ -286,9 +286,7 @@ impl Editor {
         let view = &mut self.views[self.active_view_idx];
         let buffer = self.buffer_pool.get_mut(view.buffer_id);
 
-        // Track where the primary cursor should end up
-        let mut final_row = selections.last().unwrap().0 .0;
-        let mut final_col = selections.last().unwrap().0 .1;
+        let mut new_cursors: Vec<(usize, usize)> = Vec::new();
 
         for (start_pos, end_pos) in &selections {
             if is_visual_line {
@@ -297,6 +295,7 @@ impl Editor {
                         buffer.lines.remove(start_pos.0);
                     }
                 }
+                new_cursors.push((start_pos.0, 0));
             } else if start_pos.0 == end_pos.0 {
                 // Single-line selection
                 if start_pos.0 < buffer.lines.len() {
@@ -310,6 +309,7 @@ impl Editor {
                     }
                     line.text = new_text;
                 }
+                new_cursors.push((start_pos.0, start_pos.1));
             } else {
                 // Multi-line selection
                 let first_line_text = if start_pos.0 < buffer.lines.len() {
@@ -337,6 +337,7 @@ impl Editor {
                 }
                 let combined = format!("{}{}", first_line_text, last_line_text);
                 buffer.lines.insert(start_pos.0, YLine::from(combined));
+                new_cursors.push((start_pos.0, start_pos.1));
             }
         }
 
@@ -344,29 +345,32 @@ impl Editor {
             buffer.lines.push(YLine::new());
         }
 
-        final_row = final_row.min(buffer.lines.len().saturating_sub(1));
-        if is_visual_line {
-            final_col = 0;
-        } else {
-            final_col = final_col.min(
-                buffer.lines[final_row]
-                    .char_count()
-                    .saturating_sub(1),
-            );
-        }
+        // Reverse so cursors are top-to-bottom
+        new_cursors.reverse();
 
-        // Collapse to single cursor at the topmost deletion point
-        view.cursor_states = vec![crate::view::CursorState {
-            cursor: crate::cursor::Cursor {
-                row: final_row,
-                col: final_col,
-                desired_col: final_col,
-            },
-            visual_start: None,
-        }];
+        // Place cursors at each deletion point
+        view.cursor_states = new_cursors
+            .iter()
+            .map(|&(r, c)| {
+                let row = r.min(buffer.lines.len().saturating_sub(1));
+                let col = if is_visual_line {
+                    0
+                } else {
+                    c.min(buffer.lines[row].char_count().saturating_sub(1).max(0))
+                };
+                crate::view::CursorState {
+                    cursor: crate::cursor::Cursor {
+                        row,
+                        col,
+                        desired_col: col,
+                    },
+                    visual_start: None,
+                }
+            })
+            .collect();
         view.primary_cursor_idx = 0;
 
-        self.enter_normal_mode();
+        self.mode = crate::mode::Mode::Normal;
     }
 
     /// Delete visual selections across all cursors and enter insert mode (multi-cursor `c`).

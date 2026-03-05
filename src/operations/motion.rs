@@ -249,6 +249,121 @@ impl Editor {
         }
     }
 
+    pub fn goto_matching_bracket(&mut self) {
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        for cs in view.cursor_states.iter_mut() {
+            if cs.cursor.row >= buffer.lines.len() {
+                continue;
+            }
+            let line = &buffer.lines[cs.cursor.row].text;
+            let chars: Vec<char> = line.chars().collect();
+
+            // Find the first bracket at or after cursor on the current line
+            let mut bracket_col = None;
+            for i in cs.cursor.col..chars.len() {
+                if matches!(chars[i], '(' | ')' | '[' | ']' | '{' | '}') {
+                    bracket_col = Some(i);
+                    break;
+                }
+            }
+            // Also check at cursor position going backwards if nothing found ahead
+            if bracket_col.is_none() {
+                for i in (0..cs.cursor.col).rev() {
+                    if matches!(chars[i], '(' | ')' | '[' | ']' | '{' | '}') {
+                        bracket_col = Some(i);
+                        break;
+                    }
+                }
+            }
+
+            let col = match bracket_col {
+                Some(c) => c,
+                None => continue,
+            };
+
+            let bracket = chars[col];
+            let (target, forward) = match bracket {
+                '(' => (')', true),
+                '[' => (']', true),
+                '{' => ('}', true),
+                ')' => ('(', false),
+                ']' => ('[', false),
+                '}' => ('{', false),
+                _ => continue,
+            };
+
+            let mut depth: i32 = 1;
+            let mut r = cs.cursor.row;
+            let mut c = col;
+
+            if forward {
+                // Move one position forward to start scanning
+                c += 1;
+                'outer_fwd: loop {
+                    let scan_line: Vec<char> = buffer.lines[r].text.chars().collect();
+                    while c < scan_line.len() {
+                        if scan_line[c] == bracket {
+                            depth += 1;
+                        } else if scan_line[c] == target {
+                            depth -= 1;
+                            if depth == 0 {
+                                cs.cursor.row = r;
+                                cs.cursor.col = c;
+                                cs.cursor.desired_col = c;
+                                break 'outer_fwd;
+                            }
+                        }
+                        c += 1;
+                    }
+                    r += 1;
+                    if r >= buffer.lines.len() {
+                        break;
+                    }
+                    c = 0;
+                }
+            } else {
+                // Move one position backward to start scanning
+                if c == 0 {
+                    if r == 0 {
+                        continue;
+                    }
+                    r -= 1;
+                    c = buffer.lines[r].text.chars().count().saturating_sub(1);
+                } else {
+                    c -= 1;
+                }
+                'outer_bwd: loop {
+                    let scan_line: Vec<char> = buffer.lines[r].text.chars().collect();
+                    loop {
+                        if c < scan_line.len() {
+                            if scan_line[c] == bracket {
+                                depth += 1;
+                            } else if scan_line[c] == target {
+                                depth -= 1;
+                                if depth == 0 {
+                                    cs.cursor.row = r;
+                                    cs.cursor.col = c;
+                                    cs.cursor.desired_col = c;
+                                    break 'outer_bwd;
+                                }
+                            }
+                        }
+                        if c == 0 {
+                            break;
+                        }
+                        c -= 1;
+                    }
+                    if r == 0 {
+                        break;
+                    }
+                    r -= 1;
+                    c = buffer.lines[r].text.chars().count().saturating_sub(1);
+                }
+            }
+        }
+    }
+
     pub fn find_char_backward(&mut self, target: char) {
         let view = &mut self.views[self.active_view_idx];
         let buffer = self.buffer_pool.get(view.buffer_id);

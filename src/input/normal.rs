@@ -158,12 +158,17 @@ impl Editor {
             KeyCode::Char('P') => self.paste_before(),
             KeyCode::Char('f') => self.pending_key = Some('f'),
             KeyCode::Char('F') => self.pending_key = Some('F'),
+            KeyCode::Char('%') => self.goto_matching_bracket(),
             KeyCode::Char('u') => self.undo(),
             // Visual modes
             KeyCode::Char('v') => self.enter_visual_mode(),
             KeyCode::Char('V') => self.enter_visual_line_mode(),
             // Command mode
             KeyCode::Char(':') => self.enter_command_mode(),
+            // Search
+            KeyCode::Char('/') => self.enter_search_mode(),
+            KeyCode::Char('n') => self.search_next(),
+            KeyCode::Char('N') => self.search_prev(),
             // Insert modes
             KeyCode::Char('i') => self.enter_insert_mode(),
             KeyCode::Char('a') => self.append(),

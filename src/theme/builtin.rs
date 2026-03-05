@@ -40,6 +40,7 @@ fn monokai() -> Theme {
             popup_selected_fg:   Color::Rgb(0x27, 0x28, 0x22),
             popup_selected_bg:   Color::Rgb(0xA6, 0xE2, 0x2E),
             ghost_text:          Color::Rgb(0x75, 0x71, 0x5E), // gray-brown (same as comments)
+            search_match_bg:     Color::Rgb(0x75, 0x58, 0x00), // dark yellow/orange
         },
     }
 }
@@ -83,6 +84,7 @@ fn gruvbox_dark() -> Theme {
             popup_selected_fg:   Color::Rgb(0x28, 0x28, 0x28),
             popup_selected_bg:   Color::Rgb(0xB8, 0xBB, 0x26),
             ghost_text:          Color::Rgb(0x66, 0x5C, 0x54), // fg3
+            search_match_bg:     Color::Rgb(0x6A, 0x52, 0x00), // dark yellow
         },
     }
 }
@@ -126,6 +128,7 @@ fn catppuccin_mocha() -> Theme {
             popup_selected_fg:   Color::Rgb(0x1E, 0x1E, 0x2E),
             popup_selected_bg:   Color::Rgb(0xA6, 0xE3, 0xA1),
             ghost_text:          Color::Rgb(0x58, 0x5B, 0x70), // surface2
+            search_match_bg:     Color::Rgb(0x58, 0x4A, 0x00), // dark yellow
         },
     }
 }
@@ -169,6 +172,7 @@ fn default_dark() -> Theme {
             popup_selected_fg:   Color::Black,
             popup_selected_bg:   Color::White,
             ghost_text:          Color::DarkGray,
+            search_match_bg:     Color::Rgb(0x6A, 0x52, 0x00),
         },
     }
 }

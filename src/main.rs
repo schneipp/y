@@ -31,8 +31,6 @@ fn main() -> io::Result<()> {
         editor::Editor::default()
     };
 
-    {}
-
     let result = editor.run(&mut terminal);
     tui::restore()?;
     result

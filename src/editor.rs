@@ -57,6 +57,15 @@ pub struct Editor {
     pub completion: CompletionState,
     pub show_welcome: bool,
     pub rg_available: bool,
+    pub search_query: String,
+    pub search_buffer: String,
+    pub search_direction: SearchDirection,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchDirection {
+    Forward,
+    Backward,
 }
 
 impl Editor {
@@ -119,6 +128,9 @@ impl Editor {
             completion: CompletionState::new(),
             show_welcome: true,
             rg_available,
+            search_query: String::new(),
+            search_buffer: String::new(),
+            search_direction: SearchDirection::Forward,
         };
         editor.switch_theme(&theme_name);
         editor.apply_theme_to_plugins();
@@ -258,6 +270,7 @@ impl Editor {
 
     pub fn enter_normal_mode(&mut self) {
         self.mode = Mode::Normal;
+        self.search_query.clear();
         let view = &mut self.views[self.active_view_idx];
         view.set_visual_start(None);
         // Collapse multi-cursor on Esc
@@ -345,6 +358,172 @@ impl Editor {
     pub fn enter_command_mode(&mut self) {
         self.mode = Mode::Command;
         self.command_buffer.clear();
+    }
+
+    pub fn enter_search_mode(&mut self) {
+        self.mode = Mode::Search;
+        self.search_buffer.clear();
+        self.command_buffer.clear();
+        self.search_direction = SearchDirection::Forward;
+    }
+
+    pub fn handle_search_mode(&mut self, key_event: crossterm::event::KeyEvent) {
+        match key_event.code {
+            crossterm::event::KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.search_buffer.clear();
+                self.command_buffer.clear();
+            }
+            crossterm::event::KeyCode::Enter => {
+                self.search_query = self.search_buffer.clone();
+                self.search_buffer.clear();
+                self.command_buffer.clear();
+                self.mode = Mode::Normal;
+                if !self.search_query.is_empty() {
+                    self.jump_to_next_search_match();
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.search_buffer.pop();
+                self.command_buffer = self.search_buffer.clone();
+            }
+            crossterm::event::KeyCode::Char(c) => {
+                self.search_buffer.push(c);
+                self.command_buffer = self.search_buffer.clone();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn search_next(&mut self) {
+        if !self.search_query.is_empty() {
+            self.search_direction = SearchDirection::Forward;
+            self.jump_to_next_search_match();
+        }
+    }
+
+    pub fn search_prev(&mut self) {
+        if !self.search_query.is_empty() {
+            self.search_direction = SearchDirection::Backward;
+            self.jump_to_prev_search_match();
+        }
+    }
+
+    fn select_search_match(&mut self, row: usize, col: usize) {
+        let match_end = col + self.search_query.chars().count().saturating_sub(1);
+        let view = &mut self.views[self.active_view_idx];
+        view.collapse_to_primary();
+        view.set_visual_start(Some((row, col)));
+        view.cursor_mut().row = row;
+        view.cursor_mut().col = match_end;
+        view.cursor_mut().desired_col = match_end;
+        self.mode = Mode::Visual;
+    }
+
+    fn jump_to_next_search_match(&mut self) {
+        let view = &self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let start_row = view.cursor().row;
+        let start_col = view.cursor().col + 1;
+        let query = &self.search_query;
+
+        // Search from cursor position forward
+        for r in start_row..buffer.lines.len() {
+            let yline = &buffer.lines[r];
+            let search_from_char = if r == start_row { start_col } else { 0 };
+            let search_from_byte = yline.char_to_byte(search_from_char);
+            if let Some(byte_pos) = yline.text[search_from_byte..].find(query.as_str()) {
+                let found_byte = search_from_byte + byte_pos;
+                let found_col = yline.text[..found_byte].chars().count();
+                self.select_search_match(r, found_col);
+                return;
+            }
+        }
+
+        // Wrap around from beginning
+        for r in 0..=start_row.min(buffer.lines.len().saturating_sub(1)) {
+            let yline = &buffer.lines[r];
+            let search_to = if r == start_row {
+                yline.char_to_byte(start_col.saturating_sub(1))
+            } else {
+                yline.text.len()
+            };
+            if let Some(byte_pos) = yline.text[..search_to].find(query.as_str()) {
+                let found_col = yline.text[..byte_pos].chars().count();
+                self.select_search_match(r, found_col);
+                return;
+            }
+        }
+    }
+
+    fn jump_to_prev_search_match(&mut self) {
+        let view = &self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let start_row = view.cursor().row;
+        let start_col = view.cursor().col;
+        let query = &self.search_query;
+
+        // Search backward from cursor position
+        for r in (0..=start_row).rev() {
+            let yline = &buffer.lines[r];
+            let search_up_to_byte = if r == start_row {
+                yline.char_to_byte(start_col)
+            } else {
+                yline.text.len()
+            };
+            if let Some(byte_pos) = yline.text[..search_up_to_byte].rfind(query.as_str()) {
+                let found_col = yline.text[..byte_pos].chars().count();
+                self.select_search_match(r, found_col);
+                return;
+            }
+        }
+
+        // Wrap around from end
+        for r in (start_row..buffer.lines.len()).rev() {
+            let yline = &buffer.lines[r];
+            let search_from_byte = if r == start_row {
+                yline.char_to_byte(start_col)
+            } else {
+                0
+            };
+            if let Some(byte_pos) = yline.text[search_from_byte..].rfind(query.as_str()) {
+                let found_byte = search_from_byte + byte_pos;
+                let found_col = yline.text[..found_byte].chars().count();
+                self.select_search_match(r, found_col);
+                return;
+            }
+        }
+    }
+
+    fn compute_search_info(&self, view: &View, buffer: &YBuffer) -> (usize, usize) {
+        let query = &self.search_query;
+        // Use visual_start if available (match start), otherwise cursor position
+        let (cursor_row, cursor_col) = view.visual_start()
+            .unwrap_or((view.cursor().row, view.cursor().col));
+        let mut total = 0;
+        let mut current = 0;
+        let mut found_exact = false;
+
+        for (r, yline) in buffer.lines.iter().enumerate() {
+            let mut search_from = 0;
+            while let Some(byte_pos) = yline.text[search_from..].find(query.as_str()) {
+                let match_byte = search_from + byte_pos;
+                let match_col = yline.text[..match_byte].chars().count();
+                total += 1;
+                if r < cursor_row || (r == cursor_row && match_col <= cursor_col) {
+                    current += 1;
+                }
+                if r == cursor_row && match_col == cursor_col {
+                    found_exact = true;
+                }
+                search_from = match_byte + query.len();
+            }
+        }
+
+        if !found_exact && current == 0 && total > 0 {
+            current = total;
+        }
+        (current, total)
     }
 
     // Split view operations
@@ -803,6 +982,13 @@ impl Editor {
                         })
                 });
 
+                let search_info = if !self.search_query.is_empty() {
+                    let (current, total) = self.compute_search_info(view, buffer);
+                    Some(format!("{}/{}", current, total))
+                } else {
+                    None
+                };
+
                 let status = StatusBar {
                     mode: &self.mode,
                     filename: &view_filename,
@@ -814,6 +1000,7 @@ impl Editor {
                     is_active,
                     theme,
                     lsp_status: lsp_status_string.as_deref(),
+                    search_info,
                 };
                 status.render(*rect, frame.buffer_mut());
 
@@ -843,6 +1030,7 @@ impl Editor {
                     is_active,
                     show_line_numbers: true,
                     ghost_text: ghost,
+                    search_query: &self.search_query,
                 };
                 widget.render(inner, frame.buffer_mut());
             }
@@ -915,7 +1103,7 @@ impl Editor {
         // Set cursor shape based on mode (block in normal, bar in insert)
         let cursor_style = match self.mode {
             Mode::Insert => SetCursorStyle::SteadyBar,
-            Mode::Command | Mode::FuzzyFinder => SetCursorStyle::SteadyBar,
+            Mode::Command | Mode::Search | Mode::FuzzyFinder => SetCursorStyle::SteadyBar,
             _ => SetCursorStyle::SteadyBlock,
         };
         let _ = crossterm::execute!(std::io::stdout(), cursor_style);
@@ -1021,6 +1209,7 @@ impl Editor {
             Mode::Visual => self.handle_visual_mode(key_event),
             Mode::VisualLine => self.handle_visual_line_mode(key_event),
             Mode::Command => self.handle_command_mode(key_event),
+            Mode::Search => self.handle_search_mode(key_event),
             Mode::FuzzyFinder => {}
         }
 

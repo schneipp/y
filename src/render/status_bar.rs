@@ -21,6 +21,7 @@ pub struct StatusBar<'a> {
     pub is_active: bool,
     pub theme: &'a Theme,
     pub lsp_status: Option<&'a str>,
+    pub search_info: Option<String>,
 }
 
 impl<'a> Widget for StatusBar<'a> {
@@ -55,6 +56,7 @@ impl<'a> Widget for StatusBar<'a> {
             Mode::Visual | Mode::VisualLine => ui.status_mode_visual,
             Mode::Command => ui.status_mode_command,
             Mode::FuzzyFinder => ui.status_mode_normal,
+            Mode::Search => ui.status_mode_command,
         };
 
         let mode_text = match self.mode {
@@ -63,6 +65,7 @@ impl<'a> Widget for StatusBar<'a> {
             Mode::Visual => "-- VISUAL --",
             Mode::VisualLine => "-- VISUAL LINE --",
             Mode::Command => "-- COMMAND --",
+            Mode::Search => "-- SEARCH --",
             Mode::FuzzyFinder => "-- FINDER --",
         };
 
@@ -71,12 +74,27 @@ impl<'a> Widget for StatusBar<'a> {
                 ":".into(),
                 self.command_buffer.to_string().fg(ui.popup_query),
             ]))
+        } else if *self.mode == Mode::Search {
+            let mut spans = vec![
+                "/".into(),
+                self.command_buffer.to_string().fg(ui.popup_query),
+            ];
+            if let Some(ref info) = self.search_info {
+                spans.push(" ".into());
+                spans.push(format!("[{}]", info).fg(ui.status_position_fg));
+            }
+            Title::from(Line::from(spans))
         } else {
-            Title::from(Line::from(vec![
+            let mut spans = vec![
                 " ".into(),
                 mode_text.fg(mode_color).bold(),
                 " ".into(),
-            ]))
+            ];
+            if let Some(ref info) = self.search_info {
+                spans.push(format!("[{}]", info).fg(ui.status_position_fg));
+                spans.push(" ".into());
+            }
+            Title::from(Line::from(spans))
         };
 
         let border_color = if self.is_active {

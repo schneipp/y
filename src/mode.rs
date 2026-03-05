@@ -5,6 +5,7 @@ pub enum Mode {
     Visual,
     VisualLine,
     Command,
+    Search,
     FuzzyFinder,
 }
 

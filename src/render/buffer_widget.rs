@@ -23,6 +23,7 @@ pub struct BufferWidget<'a> {
     pub show_line_numbers: bool,
     /// Ghost text to render inline at cursor position (suffix text, shown dimmed)
     pub ghost_text: Option<&'a str>,
+    pub search_query: &'a str,
 }
 
 impl<'a> BufferWidget<'a> {
@@ -208,6 +209,25 @@ impl<'a> Widget for BufferWidget<'a> {
                             }
                         }
                     }
+                }
+            }
+
+            // Highlight search matches
+            if !self.search_query.is_empty() {
+                let search_style = Style::default().bg(ui.search_match_bg);
+                let query_char_len = self.search_query.chars().count();
+                let mut search_from = 0;
+                while let Some(byte_pos) = text[search_from..].find(self.search_query) {
+                    let match_start_byte = search_from + byte_pos;
+                    let match_start_col = text[..match_start_byte].chars().count();
+                    for c in match_start_col..match_start_col + query_char_len {
+                        let sx = content_x + c as u16;
+                        if sx < area.x + area.width {
+                            let cell = buf.get_mut(sx, y);
+                            cell.set_style(search_style);
+                        }
+                    }
+                    search_from = match_start_byte + self.search_query.len();
                 }
             }
 
