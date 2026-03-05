@@ -87,8 +87,17 @@ class FuzzyFinderPlugin extends Plugin {
 
     runRgFiles() {
         try {
-            const output = YEditor.execCommand("rg", ["--files", "--hidden", "--glob", "!.git"]);
-            this.results = output.split("\n").filter(line => line.length > 0);
+            const output = YEditor.execCommand("rg", [
+                "--files",
+                "--hidden",
+                "--glob", "!.git",
+                "--glob", "!target",
+                "--glob", "!node_modules",
+                "--glob", "!.cache",
+                "--glob", "!dist",
+                "--glob", "!build",
+            ]);
+            this.results = output.split("\n").filter(line => line.length > 0).slice(0, 500);
         } catch (e) {
             YEditor.log("Failed to run rg --files: " + e);
             this.results = [];
@@ -109,6 +118,9 @@ class FuzzyFinderPlugin extends Plugin {
                 "--color=never",
                 "--hidden",
                 "--glob", "!.git",
+                "--glob", "!target",
+                "--glob", "!node_modules",
+                "--glob", "!.cache",
                 query
             ]);
             this.results = output.split("\n")

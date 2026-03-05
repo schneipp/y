@@ -77,8 +77,9 @@ impl JsFuzzyFinderPlugin {
     pub fn new() -> Self {
         let mut runtime = DenoPluginRuntime::new();
 
-        // Load the fuzzy finder JavaScript plugin
-        if let Err(e) = runtime.load_plugin("plugins/fuzzy_finder.js") {
+        // Load the embedded fuzzy finder JavaScript plugin
+        let js_source = include_str!("../../../plugins/fuzzy_finder.js");
+        if let Err(e) = runtime.runtime.execute_script("<fuzzy_finder>", js_source.to_string()) {
             eprintln!("Failed to load fuzzy_finder.js: {}", e);
         }
 
