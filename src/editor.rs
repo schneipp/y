@@ -19,7 +19,7 @@ use crate::config::{Config, EditorMode};
 use crate::layout::{SplitDirection, SplitNode};
 use crate::lsp::LspManager;
 use crate::mode::{Mode, YankRegister};
-use crate::plugins;
+use crate::plugins::{self, Plugin as _};
 use crate::render::buffer_widget::BufferWidget;
 use crate::render::status_bar::StatusBar;
 use crate::theme::ThemeManager;
@@ -122,6 +122,9 @@ impl Editor {
         ));
         plugin_manager.register(Box::new(
             plugins::git_client::GitClientPlugin::new(),
+        ));
+        plugin_manager.register(Box::new(
+            plugins::file_tree::FileTreePlugin::new(),
         ));
 
         let mut buffer_pool = BufferPool::new();
@@ -954,6 +957,22 @@ impl Editor {
         }
     }
 
+    fn handle_file_tree_open(&mut self) {
+        let pending = if let Some(plugin) = self.plugin_manager.get_mut("file_tree") {
+            if let Some(tree_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::file_tree::FileTreePlugin>() {
+                tree_plugin.pending_open.take()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(open) = pending {
+            self.open_file_in_view(&open.path);
+        }
+    }
+
     pub fn close_current_view(&mut self) {
         let view_ids = self.split_root.view_ids();
         if view_ids.len() <= 1 {
@@ -1165,8 +1184,16 @@ impl Editor {
                 0
             };
 
-            let x = rect.x + 1 + ln_width + active_view.cursor().col as u16;
-            let y = rect.y + 1 + (active_view.cursor().row.saturating_sub(active_view.scroll_offset)) as u16;
+            let cursor_col = active_view.cursor().col;
+            let cursor_row = active_view.cursor().row;
+            let buffer = self.buffer_pool.get(active_view.buffer_id);
+            let visual_col = if cursor_row < buffer.lines.len() {
+                buffer.lines[cursor_row].visual_col(cursor_col, 4)
+            } else {
+                cursor_col
+            };
+            let x = rect.x + 1 + ln_width + visual_col as u16;
+            let y = rect.y + 1 + (cursor_row.saturating_sub(active_view.scroll_offset)) as u16;
             frame.set_cursor(x, y);
         }
 
@@ -1292,6 +1319,8 @@ impl Editor {
                 }
                 // Check if fuzzy finder wants to open a file (only in active view)
                 self.handle_fuzzy_finder_open();
+                // Check if file tree wants to open a file
+                self.handle_file_tree_open();
                 return;
             }
         }
@@ -1482,6 +1511,26 @@ impl Editor {
             // Lifecycle
             Action::Exit => self.exit = true,
 
+            Action::OpenFileTree => {
+                if let Some(plugin) = self.plugin_manager.get_mut("file_tree") {
+                    if let Some(tree_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::file_tree::FileTreePlugin>() {
+                        if tree_plugin.is_active() {
+                            tree_plugin.deactivate();
+                        } else {
+                            let theme = self.theme_manager.current();
+                            tree_plugin.set_colors(
+                                theme.ui.popup_border,
+                                theme.ui.background,
+                                theme.ui.foreground,
+                                theme.ui.visual_selection_bg,
+                                theme.ui.status_mode_normal,
+                                theme.ui.line_number_fg,
+                            );
+                            tree_plugin.activate_tree();
+                        }
+                    }
+                }
+            }
             Action::OpenGit => {
                 if let Some(plugin) = self.plugin_manager.get_mut("git_client") {
                     if let Some(git_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::git_client::GitClientPlugin>() {

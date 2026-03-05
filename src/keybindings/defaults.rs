@@ -90,6 +90,9 @@ fn register_normal_defaults(reg: &mut KeybindingRegistry) {
     // Git
     reg.bind(m.clone(), vec![KeyCombo::char(' '), KeyCombo::char('g')], Action::OpenGit);
 
+    // File tree
+    reg.bind(m.clone(), vec![KeyCombo::char(' '), KeyCombo::char('e')], Action::OpenFileTree);
+
     // Settings
     reg.bind(m.clone(), vec![KeyCombo::special(Key::F(2))], Action::OpenSettings);
 
@@ -194,6 +197,7 @@ fn register_normie_defaults(reg: &mut KeybindingRegistry) {
     reg.bind(m.clone(), vec![KeyCombo::special(Key::F(1))], Action::ShowKeybindings);
     reg.bind(m.clone(), vec![KeyCombo::special(Key::F(2))], Action::OpenSettings);
     reg.bind(m.clone(), vec![KeyCombo::ctrl('g')], Action::OpenGit);
+    reg.bind(m.clone(), vec![KeyCombo::ctrl('e')], Action::OpenFileTree);
 
     // Word navigation with Ctrl+arrows
     reg.bind(m.clone(), vec![KeyCombo { key: Key::Left, ctrl: true, alt: false }], Action::MoveWordBackward);

@@ -1,5 +1,6 @@
 pub mod fuzzy_finder;
 pub mod deno_runtime;
+pub mod file_tree;
 pub mod git_client;
 pub mod syntax_highlighter;
 pub mod js_fuzzy_finder;

@@ -104,6 +104,9 @@ pub enum Action {
     // Git
     OpenGit,
 
+    // File tree
+    OpenFileTree,
+
     // Help
     ShowKeybindings,
 

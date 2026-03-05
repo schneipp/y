@@ -45,6 +45,42 @@ impl YLine {
             .unwrap_or(self.text.len())
     }
 
+    /// Computes the visual display column for a given character index,
+    /// expanding tabs to `tab_width` spaces aligned to tab stops.
+    pub fn visual_col(&self, char_idx: usize, tab_width: usize) -> usize {
+        let mut vcol = 0;
+        for (i, ch) in self.text.chars().enumerate() {
+            if i >= char_idx {
+                break;
+            }
+            if ch == '\t' {
+                vcol += tab_width - (vcol % tab_width);
+            } else {
+                vcol += 1;
+            }
+        }
+        vcol
+    }
+
+    /// Expands tabs to spaces, returning the display string.
+    pub fn expanded_text(&self, tab_width: usize) -> String {
+        let mut result = String::with_capacity(self.text.len());
+        let mut vcol = 0;
+        for ch in self.text.chars() {
+            if ch == '\t' {
+                let spaces = tab_width - (vcol % tab_width);
+                for _ in 0..spaces {
+                    result.push(' ');
+                }
+                vcol += spaces;
+            } else {
+                result.push(ch);
+                vcol += 1;
+            }
+        }
+        result
+    }
+
     /// Inserts a character at the given character index (not byte index).
     pub fn insert_char_at(&mut self, char_idx: usize, c: char) {
         let byte_idx = self.char_to_byte(char_idx);

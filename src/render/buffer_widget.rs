@@ -36,44 +36,58 @@ impl<'a> BufferWidget<'a> {
         digits + 1
     }
 
-    fn char_col_to_byte(text: &str, char_col: usize) -> usize {
-        text.char_indices()
-            .nth(char_col)
-            .map(|(byte_idx, _)| byte_idx)
-            .unwrap_or(text.len())
+    /// Map a char index in original text to a char index in the tab-expanded text.
+    fn char_to_visual(text: &str, char_idx: usize, tab_width: usize) -> usize {
+        let mut vcol = 0;
+        for (i, ch) in text.chars().enumerate() {
+            if i >= char_idx {
+                break;
+            }
+            if ch == '\t' {
+                vcol += tab_width - (vcol % tab_width);
+            } else {
+                vcol += 1;
+            }
+        }
+        vcol
     }
 
-    fn build_highlighted_spans<'b>(
-        text: &'b str,
+    fn build_highlighted_spans_tabbed(
+        text: &str,
+        display_text: &str,
         highlights: &[(usize, usize, Color)],
-    ) -> Line<'b> {
+    ) -> Line<'static> {
+        let tab_width = 4;
         let mut spans = Vec::with_capacity(highlights.len() * 2 + 1);
-        let mut byte_pos = 0;
+        let mut vis_pos = 0;
+        let char_count = text.chars().count();
 
         for &(start_col, end_col, color) in highlights {
-            let start_byte = Self::char_col_to_byte(text, start_col);
-            let end_byte = Self::char_col_to_byte(text, end_col.min(text.chars().count()));
+            let vis_start = Self::char_to_visual(text, start_col, tab_width);
+            let vis_end = Self::char_to_visual(text, end_col.min(char_count), tab_width);
 
-            if byte_pos < start_byte {
-                spans.push(Span::raw(&text[byte_pos..start_byte]));
+            if vis_pos < vis_start {
+                let slice: String = display_text.chars().skip(vis_pos).take(vis_start - vis_pos).collect();
+                spans.push(Span::raw(slice));
             }
 
-            let actual_start = byte_pos.max(start_byte);
-            if actual_start < end_byte {
-                spans.push(Span::styled(
-                    &text[actual_start..end_byte],
-                    Style::default().fg(color),
-                ));
+            let actual_start = vis_pos.max(vis_start);
+            if actual_start < vis_end {
+                let slice: String = display_text.chars().skip(actual_start).take(vis_end - actual_start).collect();
+                spans.push(Span::styled(slice, Style::default().fg(color)));
             }
-            byte_pos = end_byte;
+            vis_pos = vis_end;
         }
 
-        if byte_pos < text.len() {
-            spans.push(Span::raw(&text[byte_pos..]));
+        let display_len = display_text.chars().count();
+        if vis_pos < display_len {
+            let slice: String = display_text.chars().skip(vis_pos).collect();
+            spans.push(Span::raw(slice));
         }
 
         Line::from(spans)
     }
+
 }
 
 impl<'a> Widget for BufferWidget<'a> {
@@ -141,6 +155,7 @@ impl<'a> Widget for BufferWidget<'a> {
 
             let content_x = area.x + ln_width;
             let text = &yline.text;
+            let display_text = yline.expanded_text(4);
 
             // First, render the base text (syntax highlighted or plain)
             let mut used_syntax = false;
@@ -152,14 +167,14 @@ impl<'a> Widget for BufferWidget<'a> {
                 {
                     let highlights = highlighter.get_line_highlights(self.buffer_id, row);
                     if !highlights.is_empty() {
-                        let line = Self::build_highlighted_spans(text, highlights);
+                        let line = Self::build_highlighted_spans_tabbed(text, &display_text, highlights);
                         buf.set_line(content_x, y, &line, content_width);
                         used_syntax = true;
                     }
                 }
             }
             if !used_syntax {
-                buf.set_string(content_x, y, text.as_str(), Style::default().fg(ui.foreground));
+                buf.set_string(content_x, y, display_text.as_str(), Style::default().fg(ui.foreground));
             }
 
             // Then overlay visual selections from ALL cursor states
@@ -174,8 +189,8 @@ impl<'a> Widget for BufferWidget<'a> {
                         let sel_style = Style::default()
                             .fg(ui.visual_selection_fg)
                             .bg(ui.visual_selection_bg);
-                        let char_count = text.chars().count();
-                        for c in 0..char_count.max(1) {
+                        let vis_len = display_text.chars().count();
+                        for c in 0..vis_len.max(1) {
                             let sx = content_x + c as u16;
                             if sx < area.x + area.width {
                                 let cell = buf.get_mut(sx, y);
@@ -201,8 +216,10 @@ impl<'a> Widget for BufferWidget<'a> {
                         let sel_style = Style::default()
                             .fg(ui.visual_selection_fg)
                             .bg(ui.visual_selection_bg);
-                        for c in sel_start..=sel_end {
-                            let sx = content_x + c as u16;
+                        let vis_start = Self::char_to_visual(text, sel_start, 4);
+                        let vis_end = Self::char_to_visual(text, sel_end + 1, 4);
+                        for vc in vis_start..vis_end {
+                            let sx = content_x + vc as u16;
                             if sx < area.x + area.width {
                                 let cell = buf.get_mut(sx, y);
                                 cell.set_style(sel_style);
@@ -220,8 +237,10 @@ impl<'a> Widget for BufferWidget<'a> {
                 while let Some(byte_pos) = text[search_from..].find(self.search_query) {
                     let match_start_byte = search_from + byte_pos;
                     let match_start_col = text[..match_start_byte].chars().count();
-                    for c in match_start_col..match_start_col + query_char_len {
-                        let sx = content_x + c as u16;
+                    let vis_start = Self::char_to_visual(text, match_start_col, 4);
+                    let vis_end = Self::char_to_visual(text, match_start_col + query_char_len, 4);
+                    for vc in vis_start..vis_end {
+                        let sx = content_x + vc as u16;
                         if sx < area.x + area.width {
                             let cell = buf.get_mut(sx, y);
                             cell.set_style(search_style);
@@ -234,7 +253,7 @@ impl<'a> Widget for BufferWidget<'a> {
             // Render ghost text on the cursor line
             if self.is_active && row == cursor.row {
                 if let Some(ghost) = self.ghost_text {
-                    let ghost_x = content_x + cursor.col as u16;
+                    let ghost_x = content_x + yline.visual_col(cursor.col, 4) as u16;
                     let ghost_style = Style::default().fg(ui.ghost_text).bg(ui.background);
                     let available = (area.x + area.width).saturating_sub(ghost_x) as usize;
                     if available > 0 {
@@ -246,7 +265,7 @@ impl<'a> Widget for BufferWidget<'a> {
 
             for &(cr, cc) in &secondary_positions {
                 if cr == row {
-                    let screen_x = content_x + cc as u16;
+                    let screen_x = content_x + Self::char_to_visual(text, cc, 4) as u16;
                     if screen_x < area.x + area.width && y < area.y + area.height {
                         let cell = buf.get_mut(screen_x, y);
                         cell.set_style(Style::default().bg(ui.secondary_cursor_bg));
