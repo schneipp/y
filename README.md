@@ -29,10 +29,12 @@ Built-in language server support with auto-detection for 8 languages out of the 
 
 - **Autocomplete** — popup with fuzzy filtering as you type
 - **Ghost text** — inline preview of the top suggestion
+- **Go to definition** — `gd` to jump to a symbol's definition
+- **Jump back** — `Ctrl+O` to return to where you were
 - **Format on save** — LSP formatting applied automatically on `:w`
 - **Progress tracking** — see indexing status in the status bar
 
-Toggle servers with `:lspsetup`. Debug with `:lspinfo`.
+Toggle servers with `:lspsetup`, `F2` settings, or debug with `:lspinfo`.
 
 ### Smart Indentation
 Press Enter and the cursor lands exactly where it should:
@@ -67,7 +69,7 @@ Four built-in themes, switchable on the fly:
 - **Catppuccin Mocha**
 - **Dark**
 
-Switch with `<space>ft` (picker) or `:theme <name>`. Your choice persists across sessions.
+Switch with `<space>ft` (picker), `F2` settings, or `:theme <name>`. Your choice persists across sessions.
 
 ### Fuzzy Finder
 `<space>ff` to find files, `<space>/` to grep across the project. Powered by ripgrep.
@@ -75,8 +77,11 @@ Switch with `<space>ft` (picker) or `:theme <name>`. Your choice persists across
 ### Plugin System
 JavaScript plugin runtime via Deno. Extend the editor with JS plugins that have access to buffers, cursors, and the filesystem.
 
+### Settings Dialog
+Press `F2` to open the settings dialog — available in both Vim and Normie modes. Toggle editor mode, pick a theme, and enable/disable LSP servers without touching the config file.
+
 ### Persistent Config
-Settings saved to `~/.config/y/config.toml`. Theme, LSP servers, everything remembered.
+Settings saved to `~/.config/y/config.toml`. Theme, LSP servers, editor mode, keybinding overrides — everything remembered.
 
 ## Install
 
@@ -118,6 +123,8 @@ y src/main.rs        # open a file
 | `Ctrl+D/U` | Normal | Half-page down/up |
 | `Ctrl+F/B` | Normal | Full page down/up |
 | `f/F` | Normal | Find char forward/backward |
+| `gd` | Normal | Go to definition (LSP) |
+| `Ctrl+O` | Normal | Jump back |
 | `u/Ctrl+R` | Normal | Undo / Redo |
 | `p/P` | Normal | Paste after/before |
 | `:w` | Command | Save (with LSP format) |
@@ -135,6 +142,8 @@ y src/main.rs        # open a file
 | `Ctrl+W s/v` | Normal | Split horizontal / vertical |
 | `Ctrl+W h/j/k/l` | Normal | Navigate splits |
 | `Ctrl+W q` | Normal | Close split |
+| `F1` | Any | Keybindings help |
+| `F2` | Any | Settings dialog |
 
 ## Philosophy
 
