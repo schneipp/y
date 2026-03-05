@@ -143,12 +143,15 @@ impl Editor {
             (cb.row, cb.col).cmp(&(ca.row, ca.col))
         });
 
+        let mut deleted_chars = String::new();
         for i in indices {
             let cs = &mut view.cursor_states[i];
             if cs.cursor.row < buffer.lines.len() {
                 let line = &mut buffer.lines[cs.cursor.row];
                 let char_count = line.char_count();
                 if cs.cursor.col < char_count {
+                    let ch: char = line.text.chars().nth(cs.cursor.col).unwrap();
+                    deleted_chars.push(ch);
                     line.remove_char_at(cs.cursor.col);
                     let new_char_count = line.char_count();
                     if cs.cursor.col >= new_char_count && new_char_count > 0 {
@@ -159,6 +162,12 @@ impl Editor {
                     cs.cursor.desired_col = cs.cursor.col;
                 }
             }
+        }
+        if !deleted_chars.is_empty() {
+            self.yank_register = Some(crate::mode::YankRegister {
+                text: vec![deleted_chars],
+                yank_type: crate::mode::YankType::Character,
+            });
         }
     }
 

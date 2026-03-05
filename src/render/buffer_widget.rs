@@ -21,6 +21,7 @@ pub struct BufferWidget<'a> {
     pub theme: &'a Theme,
     pub is_active: bool,
     pub show_line_numbers: bool,
+    pub relative_line_numbers: bool,
     /// Ghost text to render inline at cursor position (suffix text, shown dimmed)
     pub ghost_text: Option<&'a str>,
     pub search_query: &'a str,
@@ -149,8 +150,23 @@ impl<'a> Widget for BufferWidget<'a> {
             }
 
             if self.show_line_numbers {
-                let ln_str = format!("{:>width$} ", row + 1, width = (ln_width - 1) as usize);
-                buf.set_string(area.x, y, &ln_str, Style::default().fg(ui.line_number_fg).bg(ui.background));
+                let cursor_row = self.view.cursor().row;
+                let ln_str = if self.relative_line_numbers {
+                    if row == cursor_row {
+                        format!("{:>width$} ", row + 1, width = (ln_width - 1) as usize)
+                    } else {
+                        let rel = (row as isize - cursor_row as isize).unsigned_abs();
+                        format!("{:>width$} ", rel, width = (ln_width - 1) as usize)
+                    }
+                } else {
+                    format!("{:>width$} ", row + 1, width = (ln_width - 1) as usize)
+                };
+                let ln_fg = if self.relative_line_numbers && row == cursor_row {
+                    ui.foreground
+                } else {
+                    ui.line_number_fg
+                };
+                buf.set_string(area.x, y, &ln_str, Style::default().fg(ln_fg).bg(ui.background));
             }
 
             let content_x = area.x + ln_width;

@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub editor_mode: Option<EditorMode>,
     #[serde(default)]
+    pub relative_line_numbers: bool,
+    #[serde(default)]
     pub lsp: LspConfig,
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
@@ -71,6 +73,7 @@ impl Default for Config {
         Self {
             theme: default_theme(),
             editor_mode: None,
+            relative_line_numbers: false,
             lsp: LspConfig::default(),
             keybindings: KeybindingsConfig::default(),
         }

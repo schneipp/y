@@ -5,10 +5,7 @@ use std::time::Duration;
 
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
-use ratatui::{
-    layout::Rect,
-    prelude::*,
-};
+use ratatui::{layout::Rect, prelude::*};
 
 use crossterm::event::KeyModifiers;
 use ratatui::widgets::Clear;
@@ -70,6 +67,7 @@ pub struct Editor {
     pub jump_list: Vec<JumpLocation>,
     pub jump_list_idx: usize,
     pub pending_definition_request: Option<i64>,
+    pub relative_line_numbers: bool,
     pub show_settings: bool,
     pub settings_selected: usize,
     pub settings_scroll: usize,
@@ -87,6 +85,7 @@ pub struct JumpLocation {
 enum SettingsItemKind {
     EditorMode,
     Theme,
+    RelativeLineNumbers,
     LspServer(String),
     LspInstall,
     Separator,
@@ -122,12 +121,8 @@ impl Editor {
         plugin_manager.register(Box::new(
             plugins::js_fuzzy_finder::JsFuzzyFinderPlugin::new(),
         ));
-        plugin_manager.register(Box::new(
-            plugins::git_client::GitClientPlugin::new(),
-        ));
-        plugin_manager.register(Box::new(
-            plugins::file_tree::FileTreePlugin::new(),
-        ));
+        plugin_manager.register(Box::new(plugins::git_client::GitClientPlugin::new()));
+        plugin_manager.register(Box::new(plugins::file_tree::FileTreePlugin::new()));
 
         let mut buffer_pool = BufferPool::new();
         let buffer_id = buffer_pool.add_with_filename(buffer, None);
@@ -143,6 +138,7 @@ impl Editor {
         let theme_name = config.theme.clone();
         let editor_mode = config.editor_mode.clone().unwrap_or(EditorMode::Vim);
         let show_mode_selector = config.editor_mode.is_none();
+        let relative_line_numbers = config.relative_line_numbers;
         let initial_mode = match editor_mode {
             EditorMode::Vim => Mode::Normal,
             EditorMode::Normie => Mode::Normie,
@@ -190,6 +186,7 @@ impl Editor {
             jump_list: Vec::new(),
             jump_list_idx: 0,
             pending_definition_request: None,
+            relative_line_numbers,
             show_settings: false,
             settings_selected: 0,
             settings_scroll: 0,
@@ -232,11 +229,16 @@ impl Editor {
         editor.filename = Some(filename.to_string());
 
         // Start LSP server for this file if applicable
-        if let Some(ext) = std::path::Path::new(filename).extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
             let root = std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| ".".to_string());
-            editor.lsp_manager.ensure_server_for_extension(ext, &editor.config, &root);
+            editor
+                .lsp_manager
+                .ensure_server_for_extension(ext, &editor.config, &root);
 
             // Send didOpen if server config exists
             if let Some(server_config) = editor.config.server_for_extension(ext) {
@@ -245,11 +247,17 @@ impl Editor {
                 let abs_path = std::fs::canonicalize(filename)
                     .unwrap_or_else(|_| std::path::PathBuf::from(filename));
                 let uri = format!("file://{}", abs_path.display());
-                let text: String = editor.buffer_pool.get(0).lines.iter()
+                let text: String = editor
+                    .buffer_pool
+                    .get(0)
+                    .lines
+                    .iter()
                     .map(|l| l.text.as_str())
                     .collect::<Vec<_>>()
                     .join("\n");
-                editor.lsp_manager.did_open(&server_name, &uri, &language, &text);
+                editor
+                    .lsp_manager
+                    .did_open(&server_name, &uri, &language, &text);
             }
         }
 
@@ -263,17 +271,19 @@ impl Editor {
         let ui = &theme.ui;
 
         if let Some(plugin) = self.plugin_manager.get_mut("syntax_highlighter") {
-            if let Some(hl) = plugin.as_any_mut()
-                .downcast_mut::<crate::plugins::syntax_highlighter::SyntaxHighlighter>()
-            {
+            if let Some(hl) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::syntax_highlighter::SyntaxHighlighter>(
+            ) {
                 hl.set_syntax_colors(syntax_colors);
             }
         }
 
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(ff) = plugin.as_any_mut()
-                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>()
-            {
+            if let Some(ff) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 ff.popup_colors = crate::plugins::js_fuzzy_finder::PopupColors {
                     border: ui.popup_border,
                     query: ui.popup_query,
@@ -295,9 +305,17 @@ impl Editor {
 
     /// Show theme picker via fuzzy finder
     pub fn show_theme_picker(&mut self) {
-        let themes: Vec<String> = self.theme_manager.list().iter().map(|s| s.to_string()).collect();
+        let themes: Vec<String> = self
+            .theme_manager
+            .list()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.activate_with_items(" Themes ", themes);
                 self.mode = Mode::FuzzyFinder;
                 // Use a sentinel to distinguish from buffer picker
@@ -568,7 +586,8 @@ impl Editor {
     fn compute_search_info(&self, view: &View, buffer: &YBuffer) -> (usize, usize) {
         let query = &self.search_query;
         // Use visual_start if available (match start), otherwise cursor position
-        let (cursor_row, cursor_col) = view.visual_start()
+        let (cursor_row, cursor_col) = view
+            .visual_start()
             .unwrap_or((view.cursor().row, view.cursor().col));
         let mut total = 0;
         let mut current = 0;
@@ -609,7 +628,8 @@ impl Editor {
         new_view.scroll_offset = current_view.scroll_offset;
         self.views.push(new_view);
 
-        self.split_root.split_view(current_view_id, new_view_id, SplitDirection::Horizontal);
+        self.split_root
+            .split_view(current_view_id, new_view_id, SplitDirection::Horizontal);
         self.active_view_idx = self.views.iter().position(|v| v.id == new_view_id).unwrap();
     }
 
@@ -624,7 +644,8 @@ impl Editor {
         new_view.scroll_offset = current_view.scroll_offset;
         self.views.push(new_view);
 
-        self.split_root.split_view(current_view_id, new_view_id, SplitDirection::Vertical);
+        self.split_root
+            .split_view(current_view_id, new_view_id, SplitDirection::Vertical);
         self.active_view_idx = self.views.iter().position(|v| v.id == new_view_id).unwrap();
     }
 
@@ -671,10 +692,8 @@ impl Editor {
                     .map(|line| YLine::from(line.to_string()))
                     .collect()
             };
-            self.buffer_pool.add_with_filename(
-                YBuffer::from(lines),
-                Some(filename.to_string()),
-            )
+            self.buffer_pool
+                .add_with_filename(YBuffer::from(lines), Some(filename.to_string()))
         };
 
         // Switch active view to this buffer
@@ -688,11 +707,15 @@ impl Editor {
         self.modified = self.buffer_pool.get_entry(buffer_id).modified;
 
         // Start LSP server for this file if applicable
-        if let Some(ext) = std::path::Path::new(filename).extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
             let root = std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| ".".to_string());
-            self.lsp_manager.ensure_server_for_extension(ext, &self.config, &root);
+            self.lsp_manager
+                .ensure_server_for_extension(ext, &self.config, &root);
 
             if let Some(server_config) = self.config.server_for_extension(ext) {
                 let server_name = server_config.name.clone();
@@ -701,11 +724,14 @@ impl Editor {
                     .unwrap_or_else(|_| std::path::PathBuf::from(filename));
                 let uri = format!("file://{}", abs_path.display());
                 let buffer = self.buffer_pool.get(buffer_id);
-                let text: String = buffer.lines.iter()
+                let text: String = buffer
+                    .lines
+                    .iter()
                     .map(|l| l.text.as_str())
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.lsp_manager.did_open(&server_name, &uri, &language, &text);
+                self.lsp_manager
+                    .did_open(&server_name, &uri, &language, &text);
             }
         }
     }
@@ -724,7 +750,10 @@ impl Editor {
     pub fn show_buffer_picker(&mut self) {
         let buffer_list = self.buffer_pool.buffer_list();
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.activate_with_items(
                     " Open Buffers ",
                     buffer_list.iter().map(|(_, name)| name.clone()).collect(),
@@ -740,7 +769,11 @@ impl Editor {
         // Check if the fuzzy finder just deactivated (selection was made)
         // Note: can't use has_active_plugin() because syntax_highlighter is always active
         let selection_made = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.is_custom_mode() && !fuzzy_plugin.cached_render_data.borrow().active
             } else {
                 false
@@ -755,7 +788,11 @@ impl Editor {
 
         // Get the selected index
         let selected_idx = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.get_selected_index()
             } else {
                 0
@@ -766,7 +803,11 @@ impl Editor {
 
         // Map filtered selection back to original buffer list
         let selected_name = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 let render_data = fuzzy_plugin.cached_render_data.borrow();
                 render_data.results.get(selected_idx).cloned()
             } else {
@@ -787,7 +828,10 @@ impl Editor {
         // Clean up
         self.buffer_picker_ids = None;
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.custom_items = None;
             }
         }
@@ -795,7 +839,11 @@ impl Editor {
 
     fn handle_theme_picker_result(&mut self) {
         let selection_made = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.is_custom_mode() && !fuzzy_plugin.cached_render_data.borrow().active
             } else {
                 false
@@ -810,7 +858,11 @@ impl Editor {
 
         // Get selected theme name from filtered results
         let selected_name = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 let idx = fuzzy_plugin.get_selected_index();
                 let render_data = fuzzy_plugin.cached_render_data.borrow();
                 render_data.results.get(idx).cloned()
@@ -828,7 +880,10 @@ impl Editor {
         // Clean up
         self.theme_picker_active = false;
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.custom_items = None;
             }
         }
@@ -838,7 +893,10 @@ impl Editor {
     pub fn show_lsp_info(&mut self) {
         let items = self.lsp_manager.debug_info();
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.activate_with_items(" LSP Info ", items);
                 self.mode = Mode::FuzzyFinder;
                 self.buffer_picker_ids = None;
@@ -850,22 +908,32 @@ impl Editor {
 
     /// Show LSP setup picker via fuzzy finder
     pub fn show_lsp_setup(&mut self) {
-        let items: Vec<String> = self.config.lsp.servers.iter().map(|s| {
-            let installed = crate::lsp::types::is_binary_available(&s.binary);
-            let status = if installed {
-                if s.enabled { "✓ enabled" } else { "○ disabled" }
-            } else {
-                "✗ not installed"
-            };
-            let install_hint = if !installed {
-                crate::lsp::types::install_command_str(&s.name)
-                    .map(|cmd| format!(" — {}", cmd))
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            format!("{} ({}) [{}]{}", s.name, s.language, status, install_hint)
-        }).collect();
+        let items: Vec<String> = self
+            .config
+            .lsp
+            .servers
+            .iter()
+            .map(|s| {
+                let installed = crate::lsp::types::is_binary_available(&s.binary);
+                let status = if installed {
+                    if s.enabled {
+                        "✓ enabled"
+                    } else {
+                        "○ disabled"
+                    }
+                } else {
+                    "✗ not installed"
+                };
+                let install_hint = if !installed {
+                    crate::lsp::types::install_command_str(&s.name)
+                        .map(|cmd| format!(" — {}", cmd))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                format!("{} ({}) [{}]{}", s.name, s.language, status, install_hint)
+            })
+            .collect();
 
         let title = if let Some(ref status) = self.lsp_install_status {
             format!(" LSP Servers — {} ", status)
@@ -874,7 +942,10 @@ impl Editor {
         };
 
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.activate_with_items(&title, items);
                 self.mode = Mode::FuzzyFinder;
                 self.buffer_picker_ids = None;
@@ -887,7 +958,11 @@ impl Editor {
     fn handle_lsp_picker_result(&mut self) {
         // Check if fuzzy finder was dismissed (Esc clears custom_items)
         let was_cancelled = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 !fuzzy_plugin.is_custom_mode()
             } else {
                 false
@@ -903,7 +978,11 @@ impl Editor {
         }
 
         let selection_made = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.is_custom_mode() && !fuzzy_plugin.cached_render_data.borrow().active
             } else {
                 false
@@ -918,7 +997,11 @@ impl Editor {
 
         // Get selected item from filtered results
         let selected_name = if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_ref()
+                .as_any()
+                .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 let idx = fuzzy_plugin.get_selected_index();
                 let render_data = fuzzy_plugin.cached_render_data.borrow();
                 render_data.results.get(idx).cloned()
@@ -933,16 +1016,30 @@ impl Editor {
             // Parse server name from "name (language) [status]"
             if let Some(server_name) = display_str.split(' ').next() {
                 let server_name = server_name.to_string();
-                let is_installed = self.config.lsp.servers.iter()
+                let is_installed = self
+                    .config
+                    .lsp
+                    .servers
+                    .iter()
                     .find(|s| s.name == server_name)
                     .map(|s| crate::lsp::types::is_binary_available(&s.binary))
                     .unwrap_or(false);
 
                 if is_installed {
                     // Toggle enabled/disabled
-                    if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == server_name) {
+                    if let Some(server) = self
+                        .config
+                        .lsp
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.name == server_name)
+                    {
                         server.enabled = !server.enabled;
-                        let state = if server.enabled { "enabled" } else { "disabled" };
+                        let state = if server.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        };
                         self.lsp_install_status = Some(format!("✓ {} {}", server_name, state));
                         self.config.save();
                     }
@@ -952,7 +1049,13 @@ impl Editor {
                     match crate::lsp::types::install_server(&server_name) {
                         Ok(msg) => {
                             // Auto-enable after successful install
-                            if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == server_name) {
+                            if let Some(server) = self
+                                .config
+                                .lsp
+                                .servers
+                                .iter_mut()
+                                .find(|s| s.name == server_name)
+                            {
                                 server.enabled = true;
                                 self.config.save();
                             }
@@ -968,7 +1071,10 @@ impl Editor {
 
         // Clean up fuzzy finder state
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.custom_items = None;
             }
         }
@@ -980,7 +1086,10 @@ impl Editor {
     /// Check if the fuzzy finder plugin has a pending file-open action and handle it
     fn handle_fuzzy_finder_open(&mut self) {
         let pending = if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-            if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+            if let Some(fuzzy_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+            ) {
                 fuzzy_plugin.pending_open.take()
             } else {
                 None
@@ -997,14 +1106,19 @@ impl Editor {
                 let row = line_num.min(buffer.lines.len().saturating_sub(1));
                 view.cursor_states[view.primary_cursor_idx].cursor.row = row;
                 view.cursor_states[view.primary_cursor_idx].cursor.col = 0;
-                view.cursor_states[view.primary_cursor_idx].cursor.desired_col = 0;
+                view.cursor_states[view.primary_cursor_idx]
+                    .cursor
+                    .desired_col = 0;
             }
         }
     }
 
     fn handle_file_tree_open(&mut self) {
         let pending = if let Some(plugin) = self.plugin_manager.get_mut("file_tree") {
-            if let Some(tree_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::file_tree::FileTreePlugin>() {
+            if let Some(tree_plugin) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::file_tree::FileTreePlugin>()
+            {
                 tree_plugin.pending_open.take()
             } else {
                 None
@@ -1070,10 +1184,14 @@ impl Editor {
     /// Ensure all visible buffers have up-to-date syntax highlights
     fn sync_syntax_highlights(&mut self) {
         // Collect visible buffer IDs
-        let buffer_ids: Vec<crate::buffer::BufferId> = self.views.iter().map(|v| v.buffer_id).collect();
+        let buffer_ids: Vec<crate::buffer::BufferId> =
+            self.views.iter().map(|v| v.buffer_id).collect();
 
         if let Some(plugin) = self.plugin_manager.get_mut("syntax_highlighter") {
-            if let Some(highlighter) = plugin.as_any_mut().downcast_mut::<crate::plugins::syntax_highlighter::SyntaxHighlighter>() {
+            if let Some(highlighter) = plugin
+                .as_any_mut()
+                .downcast_mut::<crate::plugins::syntax_highlighter::SyntaxHighlighter>(
+            ) {
                 for &bid in &buffer_ids {
                     let buffer = self.buffer_pool.get(bid);
                     highlighter.parse_buffer(buffer, bid);
@@ -1157,6 +1275,7 @@ impl Editor {
                     theme,
                     is_active,
                     show_line_numbers: true,
+                    relative_line_numbers: self.relative_line_numbers,
                     ghost_text: ghost,
                     search_query: &self.search_query,
                 };
@@ -1173,7 +1292,8 @@ impl Editor {
             mode: &self.mode,
             filename: &self.filename,
         };
-        self.plugin_manager.render_readonly(area, frame.buffer_mut(), &ctx);
+        self.plugin_manager
+            .render_readonly(area, frame.buffer_mut(), &ctx);
 
         // Render completion popup
         if self.completion.active && !self.completion.filtered.is_empty() {
@@ -1198,14 +1318,30 @@ impl Editor {
         if self.show_settings {
             self.render_settings(area, frame.buffer_mut());
         }
+        if self.mode == Mode::Search && self.editor_mode == EditorMode::Normie {
+            self.render_search_dialog(area, frame.buffer_mut());
+        }
 
         // Set terminal cursor position
         let active_view = &self.views[self.active_view_idx];
         let active_view_id = active_view.id;
 
+        if self.mode == Mode::Search && self.editor_mode == EditorMode::Normie {
+            let popup_width = 50u16.min(area.width.saturating_sub(4));
+            let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+            let popup_y = area.height / 2 - 1;
+            let query_len = self.search_buffer.chars().count() as u16;
+            frame.set_cursor(popup_x + 1 + query_len, popup_y + 1);
+            return;
+        }
+
         if self.mode == Mode::FuzzyFinder {
             if let Some(plugin) = self.plugin_manager.get("js_fuzzy_finder") {
-                if let Some(fuzzy_plugin) = plugin.as_ref().as_any().downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                if let Some(fuzzy_plugin) = plugin
+                    .as_ref()
+                    .as_any()
+                    .downcast_ref::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+                ) {
                     let query_len = fuzzy_plugin.get_query_length();
                     let popup_width = (area.width as f32 * 0.8) as u16;
                     let popup_height = (area.height as f32 * 0.6) as u16;
@@ -1221,9 +1357,14 @@ impl Editor {
 
         // Find the rect for the active view
         if let Some((_, rect)) = view_rects.iter().find(|(id, _)| *id == active_view_id) {
-            let ln_width = if true { // show_line_numbers
+            let ln_width = if true {
+                // show_line_numbers
                 let max_line = self.buffer_pool.get(active_view.buffer_id).lines.len();
-                let digits = if max_line == 0 { 1 } else { (max_line as f64).log10() as u16 + 1 };
+                let digits = if max_line == 0 {
+                    1
+                } else {
+                    (max_line as f64).log10() as u16 + 1
+                };
                 digits + 1
             } else {
                 0
@@ -1391,8 +1532,8 @@ impl Editor {
     }
 
     fn dispatch_via_registry(&mut self, key_event: KeyEvent) {
-        use crate::keybindings::{Action, KeyCombo, DispatchResult};
         use crate::keybindings::registry::ModeKey;
+        use crate::keybindings::{Action, DispatchResult, KeyCombo};
 
         let combo = KeyCombo::from_event(&key_event);
 
@@ -1413,7 +1554,9 @@ impl Editor {
             None => return,
         };
 
-        let result = self.key_registry.resolve(&mode_key, combo.clone(), &mut self.pending_keys);
+        let result = self
+            .key_registry
+            .resolve(&mode_key, combo.clone(), &mut self.pending_keys);
 
         match result {
             DispatchResult::Executed(action) => {
@@ -1526,16 +1669,24 @@ impl Editor {
             // Fuzzy finder / pickers
             Action::FuzzyFindFiles => {
                 if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-                    if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
-                        fuzzy_plugin.activate(crate::plugins::js_fuzzy_finder::FuzzyFinderType::Files);
+                    if let Some(fuzzy_plugin) = plugin
+                        .as_any_mut()
+                        .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+                    ) {
+                        fuzzy_plugin
+                            .activate(crate::plugins::js_fuzzy_finder::FuzzyFinderType::Files);
                         self.mode = Mode::FuzzyFinder;
                     }
                 }
             }
             Action::FuzzyGrep => {
                 if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
-                    if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
-                        fuzzy_plugin.activate(crate::plugins::js_fuzzy_finder::FuzzyFinderType::Grep);
+                    if let Some(fuzzy_plugin) = plugin
+                        .as_any_mut()
+                        .downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>(
+                    ) {
+                        fuzzy_plugin
+                            .activate(crate::plugins::js_fuzzy_finder::FuzzyFinderType::Grep);
                         self.mode = Mode::FuzzyFinder;
                     }
                 }
@@ -1558,7 +1709,10 @@ impl Editor {
 
             Action::OpenFileTree => {
                 if let Some(plugin) = self.plugin_manager.get_mut("file_tree") {
-                    if let Some(tree_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::file_tree::FileTreePlugin>() {
+                    if let Some(tree_plugin) = plugin
+                        .as_any_mut()
+                        .downcast_mut::<crate::plugins::file_tree::FileTreePlugin>(
+                    ) {
                         if tree_plugin.is_active() {
                             tree_plugin.deactivate();
                         } else {
@@ -1578,7 +1732,10 @@ impl Editor {
             }
             Action::OpenGit => {
                 if let Some(plugin) = self.plugin_manager.get_mut("git_client") {
-                    if let Some(git_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::git_client::GitClientPlugin>() {
+                    if let Some(git_plugin) = plugin
+                        .as_any_mut()
+                        .downcast_mut::<crate::plugins::git_client::GitClientPlugin>(
+                    ) {
                         let theme = self.theme_manager.current();
                         git_plugin.set_colors(
                             theme.ui.popup_border,
@@ -1758,10 +1915,14 @@ impl Editor {
         let view = &mut self.views[self.active_view_idx];
         let buffer = self.buffer_pool.get(view.buffer_id);
         let row = loc.row.min(buffer.lines.len().saturating_sub(1));
-        let col = loc.col.min(buffer.lines[row].char_count().saturating_sub(1));
+        let col = loc
+            .col
+            .min(buffer.lines[row].char_count().saturating_sub(1));
         view.cursor_states[view.primary_cursor_idx].cursor.row = row;
         view.cursor_states[view.primary_cursor_idx].cursor.col = col;
-        view.cursor_states[view.primary_cursor_idx].cursor.desired_col = col;
+        view.cursor_states[view.primary_cursor_idx]
+            .cursor
+            .desired_col = col;
     }
 
     // ── Go to definition ─────────────────────────────────────────────
@@ -1794,12 +1955,10 @@ impl Editor {
         // Push current position to jump list before jumping
         self.push_jump();
 
-        if let Some(id) = self.lsp_manager.request_definition(
-            &server_config.name,
-            &uri,
-            cursor_row,
-            cursor_col,
-        ) {
+        if let Some(id) =
+            self.lsp_manager
+                .request_definition(&server_config.name, &uri, cursor_row, cursor_col)
+        {
             self.pending_definition_request = Some(id);
         }
     }
@@ -1850,20 +2009,33 @@ impl Editor {
 
         // Handle LocationLink (has targetUri/targetRange) or Location (has uri/range)
         let (uri, line, col) = if let Some(target_uri) = location.get("targetUri") {
-            let range = location.get("targetSelectionRange")
+            let range = location
+                .get("targetSelectionRange")
                 .or_else(|| location.get("targetRange"));
             let start = range.and_then(|r| r.get("start"));
             (
                 target_uri.as_str().unwrap_or(""),
-                start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize,
-                start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize,
+                start
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0) as usize,
+                start
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0) as usize,
             )
         } else if let Some(uri) = location.get("uri") {
             let start = location.get("range").and_then(|r| r.get("start"));
             (
                 uri.as_str().unwrap_or(""),
-                start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize,
-                start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize,
+                start
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0) as usize,
+                start
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0) as usize,
             )
         } else {
             return;
@@ -1885,7 +2057,9 @@ impl Editor {
         let col = col.min(buffer.lines[row].char_count().saturating_sub(1));
         view.cursor_states[view.primary_cursor_idx].cursor.row = row;
         view.cursor_states[view.primary_cursor_idx].cursor.col = col;
-        view.cursor_states[view.primary_cursor_idx].cursor.desired_col = col;
+        view.cursor_states[view.primary_cursor_idx]
+            .cursor
+            .desired_col = col;
         // Center the view on the definition
         let area_height = 40; // approximate
         view.scroll_offset = row.saturating_sub(area_height / 2);
@@ -1894,7 +2068,10 @@ impl Editor {
     /// Accept the ghost text (first filtered completion item) via Ctrl+L.
     fn accept_ghost_text(&mut self) {
         // Ghost text is always the first filtered item
-        let item = match self.completion.filtered.first()
+        let item = match self
+            .completion
+            .filtered
+            .first()
             .and_then(|&idx| self.completion.items.get(idx))
             .cloned()
         {
@@ -1985,9 +2162,9 @@ impl Editor {
 
     /// Render the completion popup near the cursor.
     fn render_welcome(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::style::Style;
         use ratatui::text::{Line, Span, Text};
         use ratatui::widgets::{Block, Borders, Paragraph};
-        use ratatui::style::Style;
 
         let theme = self.theme_manager.current();
         let accent = theme.ui.popup_border;
@@ -1999,7 +2176,9 @@ impl Editor {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  y editor",
-            Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD),
+            Style::default()
+                .fg(accent)
+                .add_modifier(ratatui::style::Modifier::BOLD),
         )));
         lines.push(Line::from(""));
 
@@ -2017,6 +2196,9 @@ impl Editor {
 
         let shortcuts: Vec<(&str, &str)> = if self.editor_mode == EditorMode::Normie {
             vec![
+                ("  F1       ", "  Keybinding help"),
+                ("  F2       ", "  Settings & LSP install"),
+                ("", ""),
                 ("  Ctrl+O   ", "  Find file"),
                 ("  Ctrl+P   ", "  Grep in project"),
                 ("  Ctrl+F   ", "  Search in file"),
@@ -2032,15 +2214,15 @@ impl Editor {
                 ("  Ctrl+G   ", "  Git client"),
                 ("  Ctrl+E   ", "  File tree"),
                 ("", ""),
-                ("  F1       ", "  Keybinding help"),
-                ("  F2       ", "  Settings & LSP install"),
-                ("", ""),
                 ("  Ctrl+←/→ ", "  Word navigation"),
                 ("  Ctrl+Home", "  Go to start"),
                 ("  Ctrl+End ", "  Go to end"),
             ]
         } else {
             vec![
+                ("  F1       ", "  Keybinding help"),
+                ("  F2       ", "  Settings & LSP install"),
+                ("", ""),
                 ("  Space f f", "  Find file"),
                 ("  Space /  ", "  Grep in project"),
                 ("  Space b b", "  Buffer picker"),
@@ -2061,9 +2243,6 @@ impl Editor {
                 ("  Ctrl+N   ", "  Multi-cursor select"),
                 ("  Space g  ", "  Git client"),
                 ("  Space e  ", "  File tree"),
-                ("", ""),
-                ("  F1       ", "  Keybinding help"),
-                ("  F2       ", "  Settings & LSP install"),
             ]
         };
 
@@ -2110,9 +2289,9 @@ impl Editor {
     }
 
     fn render_keybindings_help(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::style::Style;
         use ratatui::text::{Line, Span, Text};
         use ratatui::widgets::{Block, Borders, Paragraph};
-        use ratatui::style::Style;
 
         let theme = self.theme_manager.current();
         let accent = theme.ui.popup_border;
@@ -2129,7 +2308,9 @@ impl Editor {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             title,
-            Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD),
+            Style::default()
+                .fg(accent)
+                .add_modifier(ratatui::style::Modifier::BOLD),
         )));
         lines.push(Line::from(""));
 
@@ -2265,6 +2446,13 @@ impl Editor {
             kind: SettingsItemKind::Theme,
         });
 
+        // Relative line numbers
+        items.push(SettingsItem {
+            label: "Relative Line Numbers".to_string(),
+            value: if self.relative_line_numbers { "On" } else { "Off" }.to_string(),
+            kind: SettingsItemKind::RelativeLineNumbers,
+        });
+
         // Separator
         items.push(SettingsItem {
             label: String::new(),
@@ -2311,7 +2499,10 @@ impl Editor {
     }
 
     fn settings_selectable_count(&self) -> usize {
-        self.settings_items().iter().filter(|i| i.kind != SettingsItemKind::Separator).count()
+        self.settings_items()
+            .iter()
+            .filter(|i| i.kind != SettingsItemKind::Separator)
+            .count()
     }
 
     fn settings_item_at_selection(&self, sel: usize) -> Option<SettingsItem> {
@@ -2374,15 +2565,26 @@ impl Editor {
                 self.show_settings = false;
                 self.show_theme_picker();
             }
+            SettingsItemKind::RelativeLineNumbers => {
+                self.relative_line_numbers = !self.relative_line_numbers;
+                self.config.relative_line_numbers = self.relative_line_numbers;
+                self.config.save();
+            }
             SettingsItemKind::LspServer(ref name) => {
                 let name = name.clone();
-                let installed = self.config.lsp.servers.iter()
+                let installed = self
+                    .config
+                    .lsp
+                    .servers
+                    .iter()
                     .find(|s| s.name == name)
                     .map(|s| crate::lsp::types::is_binary_available(&s.binary))
                     .unwrap_or(false);
 
                 if installed {
-                    if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == name) {
+                    if let Some(server) =
+                        self.config.lsp.servers.iter_mut().find(|s| s.name == name)
+                    {
                         server.enabled = !server.enabled;
                     }
                     self.config.save();
@@ -2390,7 +2592,9 @@ impl Editor {
                     // Install, then enable
                     match crate::lsp::types::install_server(&name) {
                         Ok(_) => {
-                            if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == name) {
+                            if let Some(server) =
+                                self.config.lsp.servers.iter_mut().find(|s| s.name == name)
+                            {
                                 server.enabled = true;
                             }
                             self.config.save();
@@ -2407,10 +2611,36 @@ impl Editor {
         }
     }
 
+    fn render_search_dialog(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::style::{Modifier, Style};
+        use ratatui::widgets::{Block, Borders, Clear};
+
+        let ui = &self.theme_manager.current().ui;
+        let popup_width = 50u16.min(area.width.saturating_sub(4));
+        let popup_height = 3u16;
+        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = area.height / 2 - 1;
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        Clear.render(popup_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Find ")
+            .title_style(Style::default().fg(ui.foreground).add_modifier(Modifier::BOLD))
+            .border_style(Style::default().fg(ui.popup_border))
+            .style(Style::default().bg(ui.background));
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+
+        let display = &self.search_buffer;
+        buf.set_string(inner.x, inner.y, display, Style::default().fg(ui.foreground).bg(ui.background));
+    }
+
     fn render_settings(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::style::{Modifier, Style};
         use ratatui::text::{Line, Span, Text};
         use ratatui::widgets::{Block, Borders, Paragraph};
-        use ratatui::style::{Modifier, Style};
 
         let theme = self.theme_manager.current();
         let accent = theme.ui.popup_border;
@@ -2437,7 +2667,10 @@ impl Editor {
 
             let is_selected = selectable_idx == self.settings_selected;
             let key_style = if is_selected {
-                Style::default().fg(accent).bg(sel_bg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(accent)
+                    .bg(sel_bg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(fg)
             };
@@ -2491,9 +2724,9 @@ impl Editor {
     }
 
     fn render_mode_selector(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::style::Style;
         use ratatui::text::{Line, Span, Text};
         use ratatui::widgets::{Block, Borders, Paragraph};
-        use ratatui::style::Style;
 
         let theme = self.theme_manager.current();
         let accent = theme.ui.popup_border;
@@ -2504,7 +2737,9 @@ impl Editor {
             Line::from(""),
             Line::from(Span::styled(
                 "  y editor",
-                Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD),
+                Style::default()
+                    .fg(accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -2513,7 +2748,12 @@ impl Editor {
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  v", Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    "  v",
+                    Style::default()
+                        .fg(accent)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Span::styled("  Vim mode", Style::default().fg(dim)),
             ]),
             Line::from(Span::styled(
@@ -2522,7 +2762,12 @@ impl Editor {
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  any other key", Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    "  any other key",
+                    Style::default()
+                        .fg(accent)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Span::styled("  Normal mode", Style::default().fg(dim)),
             ]),
             Line::from(Span::styled(
@@ -2668,7 +2913,10 @@ impl Editor {
                 let display = format!(
                     " {}{}",
                     kind_str,
-                    &item.label[..item.label.len().min(inner_width.saturating_sub(kind_str.len() + 1))]
+                    &item.label[..item
+                        .label
+                        .len()
+                        .min(inner_width.saturating_sub(kind_str.len() + 1))]
                 );
 
                 // Pad to full width
