@@ -55,6 +55,8 @@ pub struct Editor {
     pub lsp_manager: LspManager,
     pub lsp_picker_active: bool,
     pub completion: CompletionState,
+    pub show_welcome: bool,
+    pub rg_available: bool,
 }
 
 impl Editor {
@@ -78,6 +80,13 @@ impl Editor {
         let mut buffer_pool = BufferPool::new();
         let buffer_id = buffer_pool.add_with_filename(buffer, None);
         let view = View::new(0, buffer_id);
+
+        let rg_available = std::process::Command::new("rg")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
 
         let theme_name = config.theme.clone();
         let mut editor = Self {
@@ -108,6 +117,8 @@ impl Editor {
             lsp_manager: LspManager::new(),
             lsp_picker_active: false,
             completion: CompletionState::new(),
+            show_welcome: true,
+            rg_available,
         };
         editor.switch_theme(&theme_name);
         editor.apply_theme_to_plugins();
@@ -126,6 +137,7 @@ impl Editor {
             Err(_) => {
                 let mut editor = Self::with_config(config);
                 editor.filename = Some(filename.to_string());
+                editor.show_welcome = false;
                 return Ok(editor);
             }
         };
@@ -140,6 +152,7 @@ impl Editor {
         };
 
         let mut editor = Self::with_config(config);
+        editor.show_welcome = false;
         *editor.buffer_pool.get_mut(0) = YBuffer::from(lines);
         editor.buffer_pool.get_entry_mut(0).filename = Some(filename.to_string());
         editor.filename = Some(filename.to_string());
@@ -854,6 +867,16 @@ impl Editor {
             }
         }
 
+        // Render welcome screen
+        if self.show_welcome {
+            self.render_welcome(area, frame.buffer_mut());
+        }
+
+        // Hide cursor behind welcome screen
+        if self.show_welcome {
+            return;
+        }
+
         // Set terminal cursor position
         let active_view = &self.views[self.active_view_idx];
         let active_view_id = active_view.id;
@@ -909,6 +932,11 @@ impl Editor {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
+        if self.show_welcome {
+            self.show_welcome = false;
+            // Let the keypress fall through to normal handling
+        }
+
         // Ctrl+L accepts ghost text (first suggestion) — works even without popup visible
         // This keybinding is reserved for AI completions in the future.
         if self.mode == Mode::Insert
@@ -1218,6 +1246,100 @@ impl Editor {
     }
 
     /// Render the completion popup near the cursor.
+    fn render_welcome(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::text::{Line, Span, Text};
+        use ratatui::widgets::{Block, Borders, Paragraph};
+        use ratatui::style::Style;
+
+        let theme = self.theme_manager.current();
+        let accent = theme.ui.popup_border;
+        let dim = theme.ui.line_number_fg;
+        let fg = theme.ui.foreground;
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  y editor",
+            Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        if !self.rg_available {
+            lines.push(Line::from(Span::styled(
+                "  Warning: 'rg' (ripgrep) not found",
+                Style::default().fg(ratatui::style::Color::Red),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Fuzzy finder requires ripgrep to work",
+                Style::default().fg(ratatui::style::Color::Red),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        let shortcuts = [
+            ("  Space f f", "  Find file"),
+            ("  Space /  ", "  Grep in project"),
+            ("  Space b b", "  Buffer picker"),
+            ("  Space f t", "  Switch theme"),
+            ("", ""),
+            ("  :e <file>", "  Open file"),
+            ("  :w       ", "  Save"),
+            ("  :q       ", "  Quit"),
+            ("  :wq      ", "  Save & quit"),
+            ("", ""),
+            ("  :sp      ", "  Split horizontal"),
+            ("  :vs      ", "  Split vertical"),
+            ("  Ctrl+W q ", "  Close split"),
+            ("", ""),
+            ("  i        ", "  Insert mode"),
+            ("  v / V    ", "  Visual / Visual Line"),
+            ("  u        ", "  Undo"),
+            ("  Ctrl+N   ", "  Multi-cursor select"),
+        ];
+
+        for (key, desc) in &shortcuts {
+            if key.is_empty() {
+                lines.push(Line::from(""));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(*key, Style::default().fg(accent)),
+                    Span::styled(*desc, Style::default().fg(dim)),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Press any key to start",
+            Style::default().fg(dim),
+        )));
+
+        let text = Text::from(lines);
+        let height = text.lines.len() as u16 + 2;
+        let width = 40u16;
+        let popup_x = area.width.saturating_sub(width) / 2;
+        let popup_y = area.height.saturating_sub(height) / 2;
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: width.min(area.width),
+            height: height.min(area.height),
+        };
+
+        Clear.render(popup_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(accent))
+            .style(Style::default().bg(theme.ui.background).fg(fg));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+        Paragraph::new(text).render(inner, buf);
+    }
+
     fn render_completion_popup(
         &self,
         buf: &mut ratatui::buffer::Buffer,
