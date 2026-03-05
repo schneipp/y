@@ -1,185 +1,72 @@
-<p align="center">
-  <h1 align="center">y</h1>
-  <p align="center">A fast, modern terminal editor built in Rust.</p>
-  <p align="center">Vim keybindings. LSP intelligence. Zero config.</p>
-</p>
+```
 
----
+  \\   //
+   \\ //
+    | |
+    | |
+    |_|
 
-**y** is a terminal text editor that combines the speed of vim with the smartness of modern IDEs. It starts in milliseconds, understands your code through LSP and tree-sitter, and gets out of your way.
+```
 
-## Features
+# y
 
-### Vim-First Editing
-Full modal editing with the keybindings your fingers already know. Normal, Insert, Visual, Visual Line, and Command modes. Motions, operators, text objects — it all works.
+A terminal editor for people who want vim's power without vim's complexity. Think microvim. Think chadnano. Think "I just want to edit code fast."
 
-### LSP Integration
-Built-in language server support with auto-detection for 9 languages out of the box:
-
-| Language | Server |
-|----------|--------|
-| Rust | rust-analyzer |
-| TypeScript/JavaScript | typescript-language-server |
-| Python | pyright |
-| Go | gopls |
-| C/C++ | clangd |
-| Lua | lua-language-server |
-| Zig | zls |
-| Bash | bash-language-server |
-| PHP | intelephense |
-
-- **Autocomplete** — popup with fuzzy filtering as you type
-- **Ghost text** — inline preview of the top suggestion
-- **Go to definition** — `gd` to jump to a symbol's definition
-- **Jump back** — `Ctrl+O` to return to where you were
-- **Format on save** — LSP formatting applied automatically on `:w`
-- **Progress tracking** — see indexing status in the status bar
-
-Toggle servers with `:lspsetup`, `F2` settings, or debug with `:lspinfo`.
-
-### Smart Indentation
-Press Enter and the cursor lands exactly where it should:
-- Preserves indentation from the current line
-- Auto-indents after `{`, `(`, `[`, `:`
-- Splits bracket pairs: `{|}` becomes three properly indented lines
-- Detects your indent style (tabs, 2-space, 4-space) from the file
-
-### Multi-Cursor Editing
-VSCode-style multi-cursor that actually works:
-
-1. **`Ctrl+N`** on a word — selects it
-2. **`Ctrl+N`** again — selects the next occurrence
-3. Keep going — wraps around the file
-4. **`c`** — delete all selections, type the replacement everywhere at once
-5. **`d`** — delete all selections
-6. **`Esc`** — back to one cursor
-
-Also supports `Ctrl+Up/Down` for column cursors.
-
-### Split Views
-`:sp` and `:vs` for horizontal and vertical splits. `Ctrl+w` prefix for navigation (`h/j/k/l`), `Ctrl+w q` to close. Each split can show a different buffer.
-
-### Syntax Highlighting
-Tree-sitter powered parsing for accurate, fast highlighting. No regex hacks.
-
-### Themes
-Four built-in themes, switchable on the fly:
-
-- **Monokai** (default)
-- **Gruvbox Dark**
-- **Catppuccin Mocha**
-- **Dark**
-
-Switch with `<space>ft` (picker), `F2` settings, or `:theme <name>`. Your choice persists across sessions.
-
-### Fuzzy Finder
-`<space>ff` to find files, `<space>/` to grep across the project. Powered by ripgrep.
-
-### Plugin System
-JavaScript plugin runtime via Deno. Extend the editor with JS plugins that have access to buffers, cursors, and the filesystem.
-
-### Settings Dialog
-Press `F2` to open the settings dialog — available in both Vim and Normie modes. Toggle editor mode, pick a theme, and enable/disable LSP servers without touching the config file.
-
-### Persistent Config
-Settings saved to `~/.config/y/config.toml`. Theme, LSP servers, editor mode, keybinding overrides — everything remembered.
-
-### File Tree Explorer
-`<Space>e` to toggle a NeoTree-style sidebar with:
-- Nerdfont file/folder icons with per-language colors
-- Git status indicators (M, ?, A, D) on modified files
-- `j/k` to navigate, `Enter` to open, `h/l` to collapse/expand
-- `a` to create a file, `A` for a directory, `d` to delete, `r` to rename
-- `/` to filter, `y` to copy path, `R` to refresh
-
-### Git Client
-`<Space>g` for a built-in git interface:
-- View staged/unstaged changes with status indicators
-- `s/u` to stage/unstage, `S/U` for all
-- `c` to commit, `p` to push, `f` to pull — with visual feedback
-- `l` for git log, `r` to refresh
+Built in Rust. Starts instantly. Vim grammar baked in. LSP and tree-sitter out of the box. No 200-line config file.
 
 ## Install
-
-### Pre-built binary (Linux x86_64)
-
-```bash
-curl -LO https://github.com/schneipp/y/releases/latest/download/y-linux-x86_64.tar.gz
-tar xzf y-linux-x86_64.tar.gz
-chmod +x y-linux-x86_64
-sudo mv y-linux-x86_64 /usr/local/bin/y
-```
-
-### From source
-
-```bash
-git clone https://github.com/schneipp/y.git
-cd y
-cargo build --release
-cp target/release/y ~/.local/bin/
-```
-
-### Installer script
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/schneipp/y/main/installer.sh | sh
 ```
 
-## Usage
+Or grab a [pre-built binary](https://github.com/schneipp/y/releases/latest), or build from source:
 
 ```bash
-y                    # new buffer
-y src/main.rs        # open a file
+git clone https://github.com/schneipp/y.git && cd y && cargo build --release
 ```
 
-### Key Reference
+## Why y?
 
-| Key | Mode | Action |
-|-----|------|--------|
-| `h/j/k/l` | Normal | Move cursor |
-| `i/a/o/O` | Normal | Enter insert mode |
-| `v/V` | Normal | Visual / Visual Line |
-| `d/c/y` | Visual | Delete / Change / Yank selection |
-| `Ctrl+N` | Normal/Visual | Select word / next occurrence |
-| `Ctrl+N/P` | Insert | Navigate autocomplete popup |
-| `Enter` | Insert | Accept completion (or newline) |
-| `Ctrl+L` | Insert | Accept ghost text suggestion |
-| `w/b/W/B` | Normal | Word motions |
-| `0/^/$` | Normal | Line start / first char / line end |
-| `gg/G` | Normal | First / last line |
-| `Ctrl+D/U` | Normal | Half-page down/up |
-| `Ctrl+F/B` | Normal | Full page down/up |
-| `f/F` | Normal | Find char forward/backward |
-| `gd` | Normal | Go to definition (LSP) |
-| `Ctrl+O` | Normal | Jump back |
-| `u/Ctrl+R` | Normal | Undo / Redo |
-| `p/P` | Normal | Paste after/before |
-| `:w` | Command | Save (with LSP format) |
-| `:q` / `:q!` | Command | Quit / Force quit |
-| `:wq` / `:x` | Command | Save and quit |
-| `:e <file>` | Command | Open file |
-| `:sp` / `:vs` | Command | Split horizontal / vertical |
-| `:theme <name>` | Command | Switch theme |
-| `:lspsetup` | Command | Toggle language servers |
-| `:lspinfo` | Command | LSP debug info |
-| `<space>e` | Normal | Toggle file tree |
-| `<space>g` | Normal | Open git client |
-| `<space>ff` | Normal | Fuzzy find files |
-| `<space>/` | Normal | Grep project |
-| `<space>bb` | Normal | Buffer picker |
-| `<space>ft` | Normal | Theme picker |
-| `Ctrl+W s/v` | Normal | Split horizontal / vertical |
-| `Ctrl+W h/j/k/l` | Normal | Navigate splits |
-| `Ctrl+W q` | Normal | Close split |
-| `F1` | Any | Keybindings help |
-| `F2` | Any | Settings dialog |
+Because every editor is either too much or too little.
 
-## Philosophy
+Nano is simple but you outgrow it in a week. Vim is powerful but you spend a month configuring it. VS Code is nice until you SSH into a server. Neovim is great once you've written 400 lines of Lua.
 
-- **Start fast** — no startup splash, no loading bars
-- **Vim grammar** — if you know vim, you know y
-- **Smart defaults** — LSP, tree-sitter, and sensible indentation without a 200-line config
-- **Honest code** — ~3k lines of Rust, no abstraction astronautics
+**y** is the middle ground. You open it, it works. Vim keybindings are there. LSP autocomplete is there. Syntax highlighting is there. No plugins to install, no package managers to wrangle, no config to write.
+
+## What's in the box
+
+- **Modal editing** — Normal, Insert, Visual, Visual Line, Command modes. The vim motions you know.
+- **LSP support** — Autocomplete, go-to-definition, format-on-save for 9 languages. Auto-detected, one-command install via `:lspsetup`.
+- **Tree-sitter highlighting** — Real parsing, not regex.
+- **Multi-cursor** — `Ctrl+N` to select word, again for next match. `c` to change all at once.
+- **Splits** — `:sp`, `:vs`, `Ctrl+w` navigation.
+- **File tree** — `<Space>e`, NeoTree-style with git status and icons.
+- **Git client** — `<Space>g` to stage, commit, push without leaving the editor.
+- **Fuzzy finder** — `<Space>ff` for files, `<Space>/` for grep.
+- **Themes** — Monokai, Gruvbox, Catppuccin, Dark. `<Space>ft` to switch.
+- **Settings** — `F2` to toggle everything. No config file needed.
+- **Normie mode** — For people who don't speak vim. `Ctrl+S` save, `Ctrl+F` find, arrow keys.
+
+## Quick reference
+
+| Key | What it does |
+|-----|-------------|
+| `h/j/k/l` | Move |
+| `i/a/o` | Insert mode |
+| `v/V` | Visual select |
+| `w/b` | Word jump |
+| `gg/G` | Top/bottom |
+| `gd` | Go to definition |
+| `Ctrl+O` | Jump back |
+| `u/Ctrl+R` | Undo/redo |
+| `/` | Search |
+| `<Space>e` | File tree |
+| `<Space>g` | Git |
+| `<Space>ff` | Find files |
+| `:w` `:q` `:wq` | Save, quit, both |
+| `F1` | Full keybinding list |
+| `F2` | Settings |
 
 ## License
 
