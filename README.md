@@ -1,10 +1,10 @@
 ```
 
-  _   _
+   _   _
   \ \ / /
    \ v /
     | |
-    |_|    (why editor)
+    |_|    (wh)y editor
 
 ```
 
@@ -30,9 +30,11 @@ git clone https://github.com/schneipp/y.git && cd y && cargo build --release
 
 Because every editor is either too much or too little.
 
-Nano is simple but you outgrow it in a week. Vim is powerful but you spend a month configuring it. VS Code is nice until you SSH into a server. Neovim is great once you've written 400 lines of Lua.
+Nano is simple but you outgrow it in a a minute. 
+Vim is powerful but you spend all 6 months a month configuring it. VS Code is <s>nice</s> - well actually no, fuck vscode. Neovim is great once you've written 400 lines of Lua.
 
-**y** is the middle ground. You open it, it works. Vim keybindings are there. LSP autocomplete is there. Syntax highlighting is there. No plugins to install, no package managers to wrangle, no config to write.
+**y** is the middle ground. You open it, it works. A bit like the special little brother of Helix. 
+Vim keybindings are there. LSP autocomplete is there. Syntax highlighting is there. No plugins to install, no package managers to wrangle, no config to write.
 
 ## What's in the box
 
@@ -70,4 +72,4 @@ Nano is simple but you outgrow it in a week. Vim is powerful but you spend a mon
 
 ## License
 
-MIT
+BSD
