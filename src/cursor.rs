@@ -21,7 +21,7 @@ impl Cursor {
 
         for i in 0..self.row {
             if i < buffer.lines.len() {
-                char_count += buffer.lines[i].text.len() + 1;
+                char_count += buffer.lines[i].char_count() + 1;
             }
         }
 

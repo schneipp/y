@@ -21,9 +21,9 @@ impl Editor {
                 cs.cursor.row = buffer.lines.len().saturating_sub(1);
             }
             if cs.cursor.row < buffer.lines.len() {
-                let line_len = buffer.lines[cs.cursor.row].text.len();
-                if cs.cursor.col > line_len {
-                    cs.cursor.col = line_len;
+                let line_char_count = buffer.lines[cs.cursor.row].char_count();
+                if cs.cursor.col > line_char_count {
+                    cs.cursor.col = line_char_count;
                 }
             }
             cs.cursor.desired_col = cs.cursor.col;
@@ -42,9 +42,9 @@ impl Editor {
                 cs.cursor.row = buffer.lines.len().saturating_sub(1);
             }
             if cs.cursor.row < buffer.lines.len() {
-                let line_len = buffer.lines[cs.cursor.row].text.len();
-                if cs.cursor.col > line_len {
-                    cs.cursor.col = line_len;
+                let line_char_count = buffer.lines[cs.cursor.row].char_count();
+                if cs.cursor.col > line_char_count {
+                    cs.cursor.col = line_char_count;
                 }
             }
             cs.cursor.desired_col = cs.cursor.col;

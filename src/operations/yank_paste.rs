@@ -184,9 +184,11 @@ impl Editor {
                     if cs.cursor.row < buffer.lines.len() {
                         if register.text.len() == 1 {
                             let line = &mut buffer.lines[cs.cursor.row];
-                            let insert_pos = (cs.cursor.col + 1).min(line.text.len());
-                            line.text.insert_str(insert_pos, &register.text[0]);
-                            cs.cursor.col = insert_pos;
+                            let char_count = line.char_count();
+                            let insert_char_pos = (cs.cursor.col + 1).min(char_count);
+                            let insert_byte_pos = line.char_to_byte(insert_char_pos);
+                            line.text.insert_str(insert_byte_pos, &register.text[0]);
+                            cs.cursor.col = insert_char_pos;
                             cs.cursor.desired_col = cs.cursor.col;
                         } else {
                             let current_line = &buffer.lines[cs.cursor.row].text;
@@ -214,7 +216,7 @@ impl Editor {
                             }
 
                             cs.cursor.row += register.text.len() - 1;
-                            cs.cursor.col = register.text[register.text.len() - 1].len();
+                            cs.cursor.col = register.text[register.text.len() - 1].chars().count();
                             cs.cursor.desired_col = cs.cursor.col;
                         }
                     }
@@ -246,7 +248,8 @@ impl Editor {
                     if cs.cursor.row < buffer.lines.len() {
                         if register.text.len() == 1 {
                             let line = &mut buffer.lines[cs.cursor.row];
-                            line.text.insert_str(cs.cursor.col, &register.text[0]);
+                            let insert_byte_pos = line.char_to_byte(cs.cursor.col);
+                            line.text.insert_str(insert_byte_pos, &register.text[0]);
                             cs.cursor.desired_col = cs.cursor.col;
                         } else {
                             let current_line = &buffer.lines[cs.cursor.row].text;
@@ -274,7 +277,7 @@ impl Editor {
                             }
 
                             cs.cursor.row += register.text.len() - 1;
-                            cs.cursor.col = register.text[register.text.len() - 1].len();
+                            cs.cursor.col = register.text[register.text.len() - 1].chars().count();
                             cs.cursor.desired_col = cs.cursor.col;
                         }
                     }

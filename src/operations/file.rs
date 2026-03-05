@@ -143,16 +143,20 @@ fn apply_text_edits(buffer: &mut crate::buffer::YBuffer, edits: &[serde_json::Va
         }
 
         // Collect the text before the edit start and after the edit end
-        let before = if start_char <= buffer.lines[start_line].text.len() {
-            buffer.lines[start_line].text[..start_char].to_string()
+        // LSP uses character positions, convert to proper string operations
+        let start_yline = &buffer.lines[start_line];
+        let start_char_count = start_yline.char_count();
+        let before = if start_char <= start_char_count {
+            start_yline.text.chars().take(start_char).collect::<String>()
         } else {
-            buffer.lines[start_line].text.clone()
+            start_yline.text.clone()
         };
 
         let after = if end_line < buffer.lines.len() {
-            let end_text = &buffer.lines[end_line].text;
-            if end_char <= end_text.len() {
-                end_text[end_char..].to_string()
+            let end_yline = &buffer.lines[end_line];
+            let end_char_count = end_yline.char_count();
+            if end_char <= end_char_count {
+                end_yline.text.chars().skip(end_char).collect::<String>()
             } else {
                 String::new()
             }

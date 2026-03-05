@@ -43,6 +43,22 @@ class FuzzyFinderPlugin extends Plugin {
             return { consumed: true, action: null };
         }
 
+        // Down arrow - next item
+        if (code === "Down") {
+            if (this.selected < this.results.length - 1) {
+                this.selected++;
+            }
+            return { consumed: true, action: null };
+        }
+
+        // Up arrow - previous item
+        if (code === "Up") {
+            if (this.selected > 0) {
+                this.selected--;
+            }
+            return { consumed: true, action: null };
+        }
+
         // Backspace - delete character from query
         if (code === "Backspace") {
             if (this.query.length > 0) {

@@ -1048,17 +1048,21 @@ impl Editor {
             return (col, String::new());
         }
 
-        let line = &buffer.lines[row].text;
-        let end = col.min(line.len());
-        let before_cursor = &line[..end];
+        let yline = &buffer.lines[row];
+        let char_count = yline.char_count();
+        let end_char = col.min(char_count);
+        let before_cursor: String = yline.text.chars().take(end_char).collect();
 
-        let word_start = before_cursor
-            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
+        // Find word start (in character indices)
+        let mut word_start_char = 0;
+        for (i, c) in before_cursor.chars().enumerate() {
+            if !c.is_alphanumeric() && c != '_' {
+                word_start_char = i + 1;
+            }
+        }
 
-        let prefix = before_cursor[word_start..].to_string();
-        (word_start, prefix)
+        let prefix: String = before_cursor.chars().skip(word_start_char).collect();
+        (word_start_char, prefix)
     }
 
     /// Called after each char/backspace in insert mode to request or update completions.
@@ -1188,13 +1192,16 @@ impl Editor {
 
         let buffer = self.active_buffer_mut();
         if trigger_row < buffer.lines.len() {
-            let line = &buffer.lines[trigger_row].text;
-            let before = line[..trigger_col.min(line.len())].to_string();
-            let after = line[cursor_col.min(line.len())..].to_string();
+            let yline = &buffer.lines[trigger_row];
+            let char_count = yline.char_count();
+            let trigger_char = trigger_col.min(char_count);
+            let cursor_char = cursor_col.min(char_count);
+            let before: String = yline.text.chars().take(trigger_char).collect();
+            let after: String = yline.text.chars().skip(cursor_char).collect();
             buffer.lines[trigger_row].text = format!("{}{}{}", before, text, after);
         }
 
-        let new_col = trigger_col + text.len();
+        let new_col = trigger_col + text.chars().count();
         let view = &mut self.views[self.active_view_idx];
         let primary = view.primary_cursor_idx;
         view.cursor_states[primary].cursor.col = new_col;
@@ -1229,14 +1236,17 @@ impl Editor {
         // Replace from trigger_col to cursor_col with completion text
         let buffer = self.active_buffer_mut();
         if trigger_row < buffer.lines.len() {
-            let line = &buffer.lines[trigger_row].text;
-            let before = line[..trigger_col.min(line.len())].to_string();
-            let after = line[cursor_col.min(line.len())..].to_string();
+            let yline = &buffer.lines[trigger_row];
+            let char_count = yline.char_count();
+            let trigger_char = trigger_col.min(char_count);
+            let cursor_char = cursor_col.min(char_count);
+            let before: String = yline.text.chars().take(trigger_char).collect();
+            let after: String = yline.text.chars().skip(cursor_char).collect();
             buffer.lines[trigger_row].text = format!("{}{}{}", before, text, after);
         }
 
         // Move cursor to end of inserted text
-        let new_col = trigger_col + text.len();
+        let new_col = trigger_col + text.chars().count();
         let view = &mut self.views[self.active_view_idx];
         let primary = view.primary_cursor_idx;
         view.cursor_states[primary].cursor.col = new_col;

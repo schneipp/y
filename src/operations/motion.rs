@@ -16,8 +16,8 @@ impl Editor {
         let buffer = self.buffer_pool.get(view.buffer_id);
         for cs in view.cursor_states.iter_mut() {
             if cs.cursor.row < buffer.lines.len() {
-                let line_len = buffer.lines[cs.cursor.row].text.len();
-                if cs.cursor.col < line_len {
+                let line_char_count = buffer.lines[cs.cursor.row].char_count();
+                if cs.cursor.col < line_char_count {
                     cs.cursor.col += 1;
                     cs.cursor.desired_col = cs.cursor.col;
                 }
@@ -106,7 +106,7 @@ impl Editor {
             if cs.cursor.col == 0 {
                 if cs.cursor.row > 0 {
                     cs.cursor.row -= 1;
-                    cs.cursor.col = buffer.lines[cs.cursor.row].text.len();
+                    cs.cursor.col = buffer.lines[cs.cursor.row].char_count();
                     if cs.cursor.col > 0 {
                         cs.cursor.col -= 1;
                     }
@@ -164,7 +164,7 @@ impl Editor {
             if cs.cursor.col == 0 {
                 if cs.cursor.row > 0 {
                     cs.cursor.row -= 1;
-                    cs.cursor.col = buffer.lines[cs.cursor.row].text.len();
+                    cs.cursor.col = buffer.lines[cs.cursor.row].char_count();
                     if cs.cursor.col > 0 {
                         cs.cursor.col -= 1;
                     }
@@ -199,8 +199,8 @@ impl Editor {
         let buffer = self.buffer_pool.get(view.buffer_id);
         for cs in view.cursor_states.iter_mut() {
             if cs.cursor.row < buffer.lines.len() {
-                let line_len = buffer.lines[cs.cursor.row].text.len();
-                cs.cursor.col = if line_len > 0 { line_len - 1 } else { 0 };
+                let line_char_count = buffer.lines[cs.cursor.row].char_count();
+                cs.cursor.col = if line_char_count > 0 { line_char_count - 1 } else { 0 };
                 cs.cursor.desired_col = cs.cursor.col;
             }
         }
@@ -270,8 +270,8 @@ impl Editor {
 
 pub fn clamp_cursor_to_line(cursor: &mut crate::cursor::Cursor, buffer: &crate::buffer::YBuffer) {
     if cursor.row < buffer.lines.len() {
-        let line_len = buffer.lines[cursor.row].text.len();
-        cursor.col = cursor.desired_col.min(line_len);
+        let line_char_count = buffer.lines[cursor.row].char_count();
+        cursor.col = cursor.desired_col.min(line_char_count);
     }
 }
 

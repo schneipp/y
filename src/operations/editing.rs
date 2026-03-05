@@ -19,7 +19,7 @@ impl Editor {
             let cs = &mut view.cursor_states[i];
             if cs.cursor.row < buffer.lines.len() {
                 let line = &mut buffer.lines[cs.cursor.row];
-                line.text.insert(cs.cursor.col, c);
+                line.insert_char_at(cs.cursor.col, c);
                 cs.cursor.col += 1;
                 cs.cursor.desired_col = cs.cursor.col;
             }
@@ -33,9 +33,11 @@ impl Editor {
         let cs = &mut view.cursor_states[view.primary_cursor_idx];
 
         if cs.cursor.row < buffer.lines.len() {
-            let current_line = &buffer.lines[cs.cursor.row].text;
-            let before = current_line[..cs.cursor.col].to_string();
-            let after = current_line[cs.cursor.col..].to_string();
+            let line = &buffer.lines[cs.cursor.row];
+            let byte_idx = line.char_to_byte(cs.cursor.col);
+            let current_line = &line.text;
+            let before = current_line[..byte_idx].to_string();
+            let after = current_line[byte_idx..].to_string();
 
             // Compute indentation
             let base_indent = leading_whitespace(&before).to_string();
@@ -108,13 +110,13 @@ impl Editor {
             let col = view.cursor_states[i].cursor.col;
             if col > 0 {
                 if row < buffer.lines.len() {
-                    buffer.lines[row].text.remove(col - 1);
+                    buffer.lines[row].remove_char_at(col - 1);
                     view.cursor_states[i].cursor.col = col - 1;
                     view.cursor_states[i].cursor.desired_col = col - 1;
                 }
             } else if row > 0 {
                 let current_line = buffer.lines.remove(row);
-                let new_col = buffer.lines[row - 1].text.len();
+                let new_col = buffer.lines[row - 1].char_count();
                 buffer.lines[row - 1].text.push_str(&current_line.text);
                 view.cursor_states[i].cursor.row = row - 1;
                 view.cursor_states[i].cursor.col = new_col;
@@ -145,10 +147,12 @@ impl Editor {
             let cs = &mut view.cursor_states[i];
             if cs.cursor.row < buffer.lines.len() {
                 let line = &mut buffer.lines[cs.cursor.row];
-                if cs.cursor.col < line.text.len() {
-                    line.text.remove(cs.cursor.col);
-                    if cs.cursor.col >= line.text.len() && line.text.len() > 0 {
-                        cs.cursor.col = line.text.len() - 1;
+                let char_count = line.char_count();
+                if cs.cursor.col < char_count {
+                    line.remove_char_at(cs.cursor.col);
+                    let new_char_count = line.char_count();
+                    if cs.cursor.col >= new_char_count && new_char_count > 0 {
+                        cs.cursor.col = new_char_count - 1;
                     } else if line.text.is_empty() {
                         cs.cursor.col = 0;
                     }
@@ -208,10 +212,9 @@ impl Editor {
             }
             buffer.lines[cs.cursor.row].text = new_text;
 
-            if cs.cursor.col >= buffer.lines[cs.cursor.row].text.len()
-                && buffer.lines[cs.cursor.row].text.len() > 0
-            {
-                cs.cursor.col = buffer.lines[cs.cursor.row].text.len() - 1;
+            let new_char_count = buffer.lines[cs.cursor.row].char_count();
+            if cs.cursor.col >= new_char_count && new_char_count > 0 {
+                cs.cursor.col = new_char_count - 1;
             }
             cs.cursor.desired_col = cs.cursor.col;
         }
@@ -225,10 +228,11 @@ impl Editor {
 
         if cs.cursor.row < buffer.lines.len() {
             let line = &mut buffer.lines[cs.cursor.row];
-            line.text.truncate(cs.cursor.col);
+            line.truncate_at_char(cs.cursor.col);
 
-            if cs.cursor.col > 0 && cs.cursor.col >= line.text.len() {
-                cs.cursor.col = line.text.len().saturating_sub(1);
+            let new_char_count = line.char_count();
+            if cs.cursor.col > 0 && cs.cursor.col >= new_char_count {
+                cs.cursor.col = new_char_count.saturating_sub(1);
             } else if line.text.is_empty() {
                 cs.cursor.col = 0;
             }
@@ -346,8 +350,7 @@ impl Editor {
         } else {
             final_col = final_col.min(
                 buffer.lines[final_row]
-                    .text
-                    .len()
+                    .char_count()
                     .saturating_sub(1),
             );
         }
@@ -493,14 +496,14 @@ impl Editor {
                 } else {
                     (er, ec)
                 };
-                let line_len = if end_row < buffer.lines.len() {
-                    buffer.lines[end_row].text.len()
+                let line_char_count = if end_row < buffer.lines.len() {
+                    buffer.lines[end_row].char_count()
                 } else {
                     0
                 };
                 cs.cursor.row = end_row;
                 // Place cursor one past the end of selection for appending
-                cs.cursor.col = (end_col + 1).min(line_len);
+                cs.cursor.col = (end_col + 1).min(line_char_count);
                 cs.cursor.desired_col = cs.cursor.col;
             }
             cs.visual_start = None;
@@ -516,8 +519,8 @@ impl Editor {
         let cs = &mut view.cursor_states[view.primary_cursor_idx];
 
         if cs.cursor.row < buffer.lines.len() {
-            let line_len = buffer.lines[cs.cursor.row].text.len();
-            if cs.cursor.col < line_len {
+            let line_char_count = buffer.lines[cs.cursor.row].char_count();
+            if cs.cursor.col < line_char_count {
                 cs.cursor.col += 1;
                 cs.cursor.desired_col = cs.cursor.col;
             }

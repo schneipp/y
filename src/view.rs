@@ -111,10 +111,14 @@ impl View {
         let search_start_col = last_cursor.cursor.col + 1;
 
         for r in search_start_row..buffer.lines.len() {
-            let search_line = &buffer.lines[r].text;
-            let start_col = if r == search_start_row { search_start_col } else { 0 };
-            if let Some(pos) = search_line[start_col..].find(&word) {
-                let found_col = start_col + pos;
+            let yline = &buffer.lines[r];
+            let start_char = if r == search_start_row { search_start_col } else { 0 };
+            // Convert char index to byte index for slicing
+            let start_byte = yline.char_to_byte(start_char);
+            if let Some(byte_pos) = yline.text[start_byte..].find(&word) {
+                // Convert byte position back to character position
+                let found_byte = start_byte + byte_pos;
+                let found_col = yline.text[..found_byte].chars().count();
                 // Don't add duplicate
                 let already_exists = self.cursor_states.iter().any(|cs| {
                     cs.cursor.row == r && cs.cursor.col == found_col
@@ -156,24 +160,30 @@ impl View {
             };
 
         if s_row == e_row && s_row < buffer.lines.len() {
-            let line = &buffer.lines[s_row].text;
-            let from = s_col.min(line.len());
-            let to = (e_col + 1).min(line.len());
+            let yline = &buffer.lines[s_row];
+            let char_count = yline.char_count();
+            let from = s_col.min(char_count);
+            let to = (e_col + 1).min(char_count);
             if from < to {
-                return Some(line[from..to].to_string());
+                let selected: String = yline.text.chars().skip(from).take(to - from).collect();
+                return Some(selected);
             }
         } else if s_row < buffer.lines.len() && e_row < buffer.lines.len() {
             // Multi-line selection
             let mut result = String::new();
-            let first = &buffer.lines[s_row].text;
-            result.push_str(&first[s_col.min(first.len())..]);
+            let first = &buffer.lines[s_row];
+            let first_char_count = first.char_count();
+            let first_selected: String = first.text.chars().skip(s_col.min(first_char_count)).collect();
+            result.push_str(&first_selected);
             for r in (s_row + 1)..e_row {
                 result.push('\n');
                 result.push_str(&buffer.lines[r].text);
             }
             result.push('\n');
-            let last = &buffer.lines[e_row].text;
-            result.push_str(&last[..(e_col + 1).min(last.len())]);
+            let last = &buffer.lines[e_row];
+            let last_char_count = last.char_count();
+            let last_selected: String = last.text.chars().take((e_col + 1).min(last_char_count)).collect();
+            result.push_str(&last_selected);
             return Some(result);
         }
         None
@@ -196,15 +206,18 @@ impl View {
         let search_start_col = last.cursor.col + 1;
 
         for r in search_start_row..buffer.lines.len() {
-            let line = &buffer.lines[r].text;
-            let start_col = if r == search_start_row {
-                search_start_col.min(line.len())
+            let yline = &buffer.lines[r];
+            let char_count = yline.char_count();
+            let start_char = if r == search_start_row {
+                search_start_col.min(char_count)
             } else {
                 0
             };
-            if let Some(pos) = line[start_col..].find(needle) {
-                let found_col = start_col + pos;
-                let match_end = found_col + needle.len() - 1;
+            let start_byte = yline.char_to_byte(start_char);
+            if let Some(byte_pos) = yline.text[start_byte..].find(needle) {
+                let found_byte = start_byte + byte_pos;
+                let found_col = yline.text[..found_byte].chars().count();
+                let match_end = found_col + needle.chars().count() - 1;
 
                 // Don't add duplicate
                 let already_exists = self.cursor_states.iter().any(|cs| {
@@ -237,11 +250,12 @@ impl View {
             .unwrap_or(first_cursor.cursor.col);
 
         for r in 0..=wrap_end_row.min(buffer.lines.len().saturating_sub(1)) {
-            let line = &buffer.lines[r].text;
-            let mut search_from = 0;
-            while let Some(pos) = line[search_from..].find(needle) {
-                let found_col = search_from + pos;
-                let match_end = found_col + needle.len() - 1;
+            let yline = &buffer.lines[r];
+            let mut search_from_byte = 0;
+            while let Some(byte_pos) = yline.text[search_from_byte..].find(needle) {
+                let found_byte = search_from_byte + byte_pos;
+                let found_col = yline.text[..found_byte].chars().count();
+                let match_end = found_col + needle.chars().count() - 1;
 
                 // Stop if we've reached or passed the first cursor's position
                 if r == wrap_end_row && found_col >= wrap_end_col {
@@ -263,7 +277,8 @@ impl View {
                     });
                     return;
                 }
-                search_from = found_col + 1;
+                // Move to next byte after the found position
+                search_from_byte = found_byte + needle.len();
             }
         }
     }

@@ -29,6 +29,57 @@ impl YLine {
     pub fn with_style(self) -> Self {
         self
     }
+
+    /// Returns the number of characters (not bytes) in the line.
+    pub fn char_count(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    /// Converts a character index to a byte index.
+    /// Returns the byte position of the nth character, or the string length if char_idx >= char_count.
+    pub fn char_to_byte(&self, char_idx: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(char_idx)
+            .map(|(byte_idx, _)| byte_idx)
+            .unwrap_or(self.text.len())
+    }
+
+    /// Inserts a character at the given character index (not byte index).
+    pub fn insert_char_at(&mut self, char_idx: usize, c: char) {
+        let byte_idx = self.char_to_byte(char_idx);
+        self.text.insert(byte_idx, c);
+    }
+
+    /// Removes the character at the given character index (not byte index).
+    /// Returns the removed character, or None if index is out of bounds.
+    pub fn remove_char_at(&mut self, char_idx: usize) -> Option<char> {
+        let byte_idx = self.char_to_byte(char_idx);
+        if byte_idx < self.text.len() {
+            Some(self.text.remove(byte_idx))
+        } else {
+            None
+        }
+    }
+
+    /// Truncates the line at the given character index (not byte index).
+    pub fn truncate_at_char(&mut self, char_idx: usize) {
+        let byte_idx = self.char_to_byte(char_idx);
+        self.text.truncate(byte_idx);
+    }
+
+    /// Splits the line at the given character index, returning the portion after the split.
+    pub fn split_at_char(&mut self, char_idx: usize) -> String {
+        let byte_idx = self.char_to_byte(char_idx);
+        self.text.split_off(byte_idx)
+    }
+
+    /// Returns a substring from start_char to end_char (character indices, not bytes).
+    pub fn slice_chars(&self, start_char: usize, end_char: usize) -> &str {
+        let start_byte = self.char_to_byte(start_char);
+        let end_byte = self.char_to_byte(end_char);
+        &self.text[start_byte..end_byte]
+    }
 }
 
 pub type BufferId = usize;
