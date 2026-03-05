@@ -124,7 +124,6 @@ impl Editor {
         }
 
         match key_event.code {
-            KeyCode::Char('q') => self.exit = true,
             // Ctrl-modified commands
             KeyCode::Char('r') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.redo(),
             KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => self.page_down(),

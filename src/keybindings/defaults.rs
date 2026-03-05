@@ -17,7 +17,6 @@ fn register_normal_defaults(reg: &mut KeybindingRegistry) {
     let m = ModeKey::Normal;
 
     // Single-key bindings
-    reg.bind(m.clone(), vec![KeyCombo::char('q')], Action::Exit);
     reg.bind(m.clone(), vec![KeyCombo::char('h')], Action::MoveCursorLeft);
     reg.bind(m.clone(), vec![KeyCombo::char('j')], Action::MoveCursorDown);
     reg.bind(m.clone(), vec![KeyCombo::char('k')], Action::MoveCursorUp);
