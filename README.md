@@ -83,19 +83,45 @@ Press `F2` to open the settings dialog — available in both Vim and Normie mode
 ### Persistent Config
 Settings saved to `~/.config/y/config.toml`. Theme, LSP servers, editor mode, keybinding overrides — everything remembered.
 
+### File Tree Explorer
+`<Space>e` to toggle a NeoTree-style sidebar with:
+- Nerdfont file/folder icons with per-language colors
+- Git status indicators (M, ?, A, D) on modified files
+- `j/k` to navigate, `Enter` to open, `h/l` to collapse/expand
+- `a` to create a file, `A` for a directory, `d` to delete, `r` to rename
+- `/` to filter, `y` to copy path, `R` to refresh
+
+### Git Client
+`<Space>g` for a built-in git interface:
+- View staged/unstaged changes with status indicators
+- `s/u` to stage/unstage, `S/U` for all
+- `c` to commit, `p` to push, `f` to pull — with visual feedback
+- `l` for git log, `r` to refresh
+
 ## Install
 
+### Pre-built binary (Linux x86_64)
+
 ```bash
-curl -sSf https://raw.githubusercontent.com/schneipp/y/main/installer.sh | sh
+curl -LO https://github.com/schneipp/y/releases/latest/download/y-linux-x86_64.tar.gz
+tar xzf y-linux-x86_64.tar.gz
+chmod +x y-linux-x86_64
+sudo mv y-linux-x86_64 /usr/local/bin/y
 ```
 
-Or manually:
+### From source
 
 ```bash
 git clone https://github.com/schneipp/y.git
 cd y
 cargo build --release
 cp target/release/y ~/.local/bin/
+```
+
+### Installer script
+
+```bash
+curl -sSf https://raw.githubusercontent.com/schneipp/y/main/installer.sh | sh
 ```
 
 ## Usage
@@ -135,6 +161,8 @@ y src/main.rs        # open a file
 | `:theme <name>` | Command | Switch theme |
 | `:lspsetup` | Command | Toggle language servers |
 | `:lspinfo` | Command | LSP debug info |
+| `<space>e` | Normal | Toggle file tree |
+| `<space>g` | Normal | Open git client |
 | `<space>ff` | Normal | Fuzzy find files |
 | `<space>/` | Normal | Grep project |
 | `<space>bb` | Normal | Buffer picker |
