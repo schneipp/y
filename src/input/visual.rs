@@ -27,6 +27,7 @@ impl Editor {
             KeyCode::Char('G') => self.goto_last_line(),
             KeyCode::Char('d') | KeyCode::Char('x') => self.delete_visual_selection(),
             KeyCode::Char('c') | KeyCode::Char('s') => self.change_visual_selection(),
+            KeyCode::Char('a') => self.append_after_visual_selection(),
             KeyCode::Char('y') => self.yank_visual_selection(),
             KeyCode::Char('V') => self.enter_visual_line_mode(),
             KeyCode::Left => self.move_cursor_left(),

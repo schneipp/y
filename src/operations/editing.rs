@@ -478,6 +478,38 @@ impl Editor {
         self.mode = crate::mode::Mode::Insert;
     }
 
+    /// Move cursors to end of each visual selection and enter insert mode (multi-cursor `a`).
+    pub fn append_after_visual_selection(&mut self) {
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+
+        // Position each cursor at the end of its selection (one past, for insert/append)
+        for cs in &mut view.cursor_states {
+            if let Some((sr, sc)) = cs.visual_start {
+                let (er, ec) = (cs.cursor.row, cs.cursor.col);
+                // Find the end of the selection
+                let (end_row, end_col) = if (sr, sc) > (er, ec) {
+                    (sr, sc)
+                } else {
+                    (er, ec)
+                };
+                let line_len = if end_row < buffer.lines.len() {
+                    buffer.lines[end_row].text.len()
+                } else {
+                    0
+                };
+                cs.cursor.row = end_row;
+                // Place cursor one past the end of selection for appending
+                cs.cursor.col = (end_col + 1).min(line_len);
+                cs.cursor.desired_col = cs.cursor.col;
+            }
+            cs.visual_start = None;
+        }
+        view.primary_cursor_idx = 0;
+
+        self.mode = crate::mode::Mode::Insert;
+    }
+
     pub fn append(&mut self) {
         let view = &mut self.views[self.active_view_idx];
         let buffer = self.buffer_pool.get(view.buffer_id);
