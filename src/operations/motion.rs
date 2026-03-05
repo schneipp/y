@@ -1,5 +1,22 @@
 use crate::editor::Editor;
 
+#[derive(PartialEq, Clone, Copy)]
+enum CharClass {
+    Word,       // [a-zA-Z0-9_]
+    Punctuation, // other non-whitespace
+    Whitespace,
+}
+
+fn char_class(c: char) -> CharClass {
+    if c.is_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else if c.is_whitespace() {
+        CharClass::Whitespace
+    } else {
+        CharClass::Punctuation
+    }
+}
+
 impl Editor {
     pub fn move_cursor_left(&mut self) {
         let view = &mut self.views[self.active_view_idx];
@@ -81,16 +98,31 @@ impl Editor {
             }
             let line = &buffer.lines[cs.cursor.row].text;
             let chars: Vec<char> = line.chars().collect();
+            let len = chars.len();
 
-            while cs.cursor.col < chars.len() && !chars[cs.cursor.col].is_whitespace() {
-                cs.cursor.col += 1;
+            if cs.cursor.col < len {
+                let start_class = char_class(chars[cs.cursor.col]);
+                if start_class != CharClass::Whitespace {
+                    // Skip rest of current word (same class)
+                    while cs.cursor.col < len && char_class(chars[cs.cursor.col]) == start_class {
+                        cs.cursor.col += 1;
+                    }
+                }
+                // Skip whitespace
+                while cs.cursor.col < len && chars[cs.cursor.col].is_whitespace() {
+                    cs.cursor.col += 1;
+                }
             }
-            while cs.cursor.col < chars.len() && chars[cs.cursor.col].is_whitespace() {
-                cs.cursor.col += 1;
-            }
-            if cs.cursor.col >= chars.len() && cs.cursor.row < buffer.lines.len() - 1 {
+            // If we ran off the end, move to next line
+            if cs.cursor.col >= len && cs.cursor.row < buffer.lines.len() - 1 {
                 cs.cursor.row += 1;
                 cs.cursor.col = 0;
+                // Skip leading whitespace on the new line
+                let new_line = &buffer.lines[cs.cursor.row].text;
+                let new_chars: Vec<char> = new_line.chars().collect();
+                while cs.cursor.col < new_chars.len() && new_chars[cs.cursor.col].is_whitespace() {
+                    cs.cursor.col += 1;
+                }
             }
             cs.cursor.desired_col = cs.cursor.col;
         }
@@ -106,9 +138,18 @@ impl Editor {
             if cs.cursor.col == 0 {
                 if cs.cursor.row > 0 {
                     cs.cursor.row -= 1;
-                    cs.cursor.col = buffer.lines[cs.cursor.row].char_count();
-                    if cs.cursor.col > 0 {
+                    let prev_chars: Vec<char> = buffer.lines[cs.cursor.row].text.chars().collect();
+                    cs.cursor.col = prev_chars.len();
+                    // Skip trailing whitespace
+                    while cs.cursor.col > 0 && prev_chars[cs.cursor.col - 1].is_whitespace() {
                         cs.cursor.col -= 1;
+                    }
+                    // Skip the word (same class)
+                    if cs.cursor.col > 0 {
+                        let target_class = char_class(prev_chars[cs.cursor.col - 1]);
+                        while cs.cursor.col > 0 && char_class(prev_chars[cs.cursor.col - 1]) == target_class {
+                            cs.cursor.col -= 1;
+                        }
                     }
                 }
                 cs.cursor.desired_col = cs.cursor.col;
@@ -118,11 +159,16 @@ impl Editor {
             let line = &buffer.lines[cs.cursor.row].text;
             let chars: Vec<char> = line.chars().collect();
             cs.cursor.col -= 1;
+            // Skip whitespace
             while cs.cursor.col > 0 && chars[cs.cursor.col].is_whitespace() {
                 cs.cursor.col -= 1;
             }
-            while cs.cursor.col > 0 && !chars[cs.cursor.col - 1].is_whitespace() {
-                cs.cursor.col -= 1;
+            // Now skip the word (same char class)
+            if cs.cursor.col > 0 || !chars[cs.cursor.col].is_whitespace() {
+                let target_class = char_class(chars[cs.cursor.col]);
+                while cs.cursor.col > 0 && char_class(chars[cs.cursor.col - 1]) == target_class {
+                    cs.cursor.col -= 1;
+                }
             }
             cs.cursor.desired_col = cs.cursor.col;
         }

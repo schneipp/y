@@ -43,7 +43,8 @@ impl LspClient {
             .map(Stdio::from)
             .unwrap_or(Stdio::null());
 
-        let mut child = Command::new(binary)
+        let resolved = super::types::resolve_binary(binary);
+        let mut child = Command::new(&resolved)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

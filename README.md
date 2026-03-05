@@ -14,7 +14,7 @@
 Full modal editing with the keybindings your fingers already know. Normal, Insert, Visual, Visual Line, and Command modes. Motions, operators, text objects — it all works.
 
 ### LSP Integration
-Built-in language server support with auto-detection for 8 languages out of the box:
+Built-in language server support with auto-detection for 9 languages out of the box:
 
 | Language | Server |
 |----------|--------|
@@ -26,6 +26,7 @@ Built-in language server support with auto-detection for 8 languages out of the 
 | Lua | lua-language-server |
 | Zig | zls |
 | Bash | bash-language-server |
+| PHP | intelephense |
 
 - **Autocomplete** — popup with fuzzy filtering as you type
 - **Ghost text** — inline preview of the top suggestion

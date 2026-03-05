@@ -57,6 +57,7 @@ pub struct Editor {
     pub config: Config,
     pub lsp_manager: LspManager,
     pub lsp_picker_active: bool,
+    pub lsp_install_status: Option<String>,
     pub completion: CompletionState,
     pub show_welcome: bool,
     pub show_mode_selector: bool,
@@ -87,6 +88,7 @@ enum SettingsItemKind {
     EditorMode,
     Theme,
     LspServer(String),
+    LspInstall,
     Separator,
 }
 
@@ -175,6 +177,7 @@ impl Editor {
             config,
             lsp_manager: LspManager::new(),
             lsp_picker_active: false,
+            lsp_install_status: None,
             completion: CompletionState::new(),
             show_welcome: true,
             show_mode_selector,
@@ -848,17 +851,31 @@ impl Editor {
     /// Show LSP setup picker via fuzzy finder
     pub fn show_lsp_setup(&mut self) {
         let items: Vec<String> = self.config.lsp.servers.iter().map(|s| {
-            let status = if crate::lsp::types::is_binary_available(&s.binary) {
-                if s.enabled { "enabled" } else { "disabled" }
+            let installed = crate::lsp::types::is_binary_available(&s.binary);
+            let status = if installed {
+                if s.enabled { "✓ enabled" } else { "○ disabled" }
             } else {
-                "not found"
+                "✗ not installed"
             };
-            format!("{} ({}) [{}]", s.name, s.language, status)
+            let install_hint = if !installed {
+                crate::lsp::types::install_command_str(&s.name)
+                    .map(|cmd| format!(" — {}", cmd))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            format!("{} ({}) [{}]{}", s.name, s.language, status, install_hint)
         }).collect();
+
+        let title = if let Some(ref status) = self.lsp_install_status {
+            format!(" LSP Servers — {} ", status)
+        } else {
+            " LSP Servers (Enter: toggle/install) ".to_string()
+        };
 
         if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
             if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
-                fuzzy_plugin.activate_with_items(" LSP Servers ", items);
+                fuzzy_plugin.activate_with_items(&title, items);
                 self.mode = Mode::FuzzyFinder;
                 self.buffer_picker_ids = None;
                 self.theme_picker_active = false;
@@ -881,6 +898,7 @@ impl Editor {
 
         if was_cancelled {
             self.lsp_picker_active = false;
+            self.lsp_install_status = None;
             return;
         }
 
@@ -914,9 +932,36 @@ impl Editor {
         if let Some(display_str) = selected_name {
             // Parse server name from "name (language) [status]"
             if let Some(server_name) = display_str.split(' ').next() {
-                if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == server_name) {
-                    server.enabled = !server.enabled;
-                    self.config.save();
+                let server_name = server_name.to_string();
+                let is_installed = self.config.lsp.servers.iter()
+                    .find(|s| s.name == server_name)
+                    .map(|s| crate::lsp::types::is_binary_available(&s.binary))
+                    .unwrap_or(false);
+
+                if is_installed {
+                    // Toggle enabled/disabled
+                    if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == server_name) {
+                        server.enabled = !server.enabled;
+                        let state = if server.enabled { "enabled" } else { "disabled" };
+                        self.lsp_install_status = Some(format!("✓ {} {}", server_name, state));
+                        self.config.save();
+                    }
+                } else {
+                    self.lsp_install_status = Some(format!("Installing {}…", server_name));
+                    // Try to install
+                    match crate::lsp::types::install_server(&server_name) {
+                        Ok(msg) => {
+                            // Auto-enable after successful install
+                            if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == server_name) {
+                                server.enabled = true;
+                                self.config.save();
+                            }
+                            self.lsp_install_status = Some(format!("✓ {}", msg));
+                        }
+                        Err(e) => {
+                            self.lsp_install_status = Some(format!("✗ {}", e));
+                        }
+                    }
                 }
             }
         }
@@ -1985,7 +2030,10 @@ impl Editor {
                 ("  Ctrl+D   ", "  Multi-cursor select"),
                 ("", ""),
                 ("  Ctrl+G   ", "  Git client"),
+                ("  Ctrl+E   ", "  File tree"),
+                ("", ""),
                 ("  F1       ", "  Keybinding help"),
+                ("  F2       ", "  Settings & LSP install"),
                 ("", ""),
                 ("  Ctrl+←/→ ", "  Word navigation"),
                 ("  Ctrl+Home", "  Go to start"),
@@ -2012,7 +2060,10 @@ impl Editor {
                 ("  u        ", "  Undo"),
                 ("  Ctrl+N   ", "  Multi-cursor select"),
                 ("  Space g  ", "  Git client"),
+                ("  Space e  ", "  File tree"),
+                ("", ""),
                 ("  F1       ", "  Keybinding help"),
+                ("  F2       ", "  Settings & LSP install"),
             ]
         };
 
@@ -2223,21 +2274,38 @@ impl Editor {
 
         // LSP servers
         for server in &self.config.lsp.servers {
-            let status = if server.enabled {
+            let installed = crate::lsp::types::is_binary_available(&server.binary);
+            let status = if !installed {
+                "not installed".to_string()
+            } else if server.enabled {
                 self.lsp_manager
                     .status
                     .get(&server.name)
-                    .map(|s| s.as_str())
-                    .unwrap_or("stopped")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "stopped".to_string())
             } else {
-                "disabled"
+                "disabled".to_string()
             };
             items.push(SettingsItem {
                 label: format!("{} ({})", server.name, server.language),
-                value: status.to_string(),
+                value: status,
                 kind: SettingsItemKind::LspServer(server.name.clone()),
             });
         }
+
+        // Separator before LSP install
+        items.push(SettingsItem {
+            label: String::new(),
+            value: String::new(),
+            kind: SettingsItemKind::Separator,
+        });
+
+        // LSP Install/Manage
+        items.push(SettingsItem {
+            label: "Install / Manage LSP Servers".to_string(),
+            value: "→".to_string(),
+            kind: SettingsItemKind::LspInstall,
+        });
 
         items
     }
@@ -2307,10 +2375,33 @@ impl Editor {
                 self.show_theme_picker();
             }
             SettingsItemKind::LspServer(ref name) => {
-                if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == *name) {
-                    server.enabled = !server.enabled;
+                let name = name.clone();
+                let installed = self.config.lsp.servers.iter()
+                    .find(|s| s.name == name)
+                    .map(|s| crate::lsp::types::is_binary_available(&s.binary))
+                    .unwrap_or(false);
+
+                if installed {
+                    if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == name) {
+                        server.enabled = !server.enabled;
+                    }
+                    self.config.save();
+                } else {
+                    // Install, then enable
+                    match crate::lsp::types::install_server(&name) {
+                        Ok(_) => {
+                            if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == name) {
+                                server.enabled = true;
+                            }
+                            self.config.save();
+                        }
+                        Err(_) => {}
+                    }
                 }
-                self.config.save();
+            }
+            SettingsItemKind::LspInstall => {
+                self.show_settings = false;
+                self.show_lsp_setup();
             }
             SettingsItemKind::Separator => {}
         }
