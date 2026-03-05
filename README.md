@@ -81,6 +81,12 @@ Settings saved to `~/.config/y/config.toml`. Theme, LSP servers, everything reme
 ## Install
 
 ```bash
+curl -sSf https://raw.githubusercontent.com/schneipp/y/main/installer.sh | sh
+```
+
+Or manually:
+
+```bash
 git clone https://github.com/schneipp/y.git
 cd y
 cargo build --release
