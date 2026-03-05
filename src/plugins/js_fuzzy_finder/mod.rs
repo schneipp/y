@@ -267,7 +267,7 @@ impl JsFuzzyFinderPlugin {
                 drop(render_data);
                 self.custom_items = None;
                 *self.cached_render_data.borrow_mut() = RenderData::default();
-                *ctx.mode = crate::mode::Mode::Normal;
+                *ctx.mode = ctx.default_mode.clone();
                 return true;
             }
             KeyCode::Enter => {
@@ -275,7 +275,7 @@ impl JsFuzzyFinderPlugin {
                 let _selected = render_data.selected;
                 drop(render_data);
                 // Don't clear custom_items yet — the editor needs to read the selection
-                *ctx.mode = crate::mode::Mode::Normal;
+                *ctx.mode = ctx.default_mode.clone();
                 // Mark as inactive but preserve state for the editor to read
                 self.cached_render_data.borrow_mut().active = false;
                 return true;
@@ -409,14 +409,14 @@ impl Plugin for JsFuzzyFinderPlugin {
                     match action {
                         JsPluginAction::SetMode { mode } => {
                             if mode == "Normal" {
-                                *ctx.mode = crate::mode::Mode::Normal;
+                                *ctx.mode = ctx.default_mode.clone();
                             }
                         }
                         JsPluginAction::OpenFile { path, line } => {
                             // Store as pending — the editor will handle this
                             // (plugin can't create new buffers or switch views)
                             self.pending_open = Some(PendingOpen { path, line });
-                            *ctx.mode = crate::mode::Mode::Normal;
+                            *ctx.mode = ctx.default_mode.clone();
                         }
                         _ => {}
                     }

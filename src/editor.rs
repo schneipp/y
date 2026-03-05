@@ -15,7 +15,7 @@ use ratatui::widgets::Clear;
 
 use crate::buffer::{BufferPool, YBuffer, YLine};
 use crate::completion::{self, CompletionState};
-use crate::config::Config;
+use crate::config::{Config, EditorMode};
 use crate::layout::{SplitDirection, SplitNode};
 use crate::lsp::LspManager;
 use crate::mode::{Mode, YankRegister};
@@ -40,6 +40,9 @@ pub struct Editor {
     pub modified: bool,
     pub space_pressed: bool,
     pub ctrl_w_pressed: bool,
+    pub key_registry: crate::keybindings::KeybindingRegistry,
+    pub pending_keys: Vec<crate::keybindings::KeyCombo>,
+    pub awaiting_char_action: Option<crate::keybindings::Action>,
     pub plugin_manager: plugins::PluginManager,
     pub theme_manager: ThemeManager,
     pub split_root: SplitNode,
@@ -56,10 +59,42 @@ pub struct Editor {
     pub lsp_picker_active: bool,
     pub completion: CompletionState,
     pub show_welcome: bool,
+    pub show_mode_selector: bool,
+    pub editor_mode: EditorMode,
+    pub show_keybindings: bool,
     pub rg_available: bool,
     pub search_query: String,
     pub search_buffer: String,
     pub search_direction: SearchDirection,
+    pub jump_list: Vec<JumpLocation>,
+    pub jump_list_idx: usize,
+    pub pending_definition_request: Option<i64>,
+    pub show_settings: bool,
+    pub settings_selected: usize,
+    pub settings_scroll: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct JumpLocation {
+    pub filename: Option<String>,
+    pub buffer_id: crate::buffer::BufferId,
+    pub row: usize,
+    pub col: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SettingsItemKind {
+    EditorMode,
+    Theme,
+    LspServer(String),
+    Separator,
+}
+
+#[derive(Debug, Clone)]
+struct SettingsItem {
+    label: String,
+    value: String,
+    kind: SettingsItemKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +120,9 @@ impl Editor {
         plugin_manager.register(Box::new(
             plugins::js_fuzzy_finder::JsFuzzyFinderPlugin::new(),
         ));
+        plugin_manager.register(Box::new(
+            plugins::git_client::GitClientPlugin::new(),
+        ));
 
         let mut buffer_pool = BufferPool::new();
         let buffer_id = buffer_pool.add_with_filename(buffer, None);
@@ -98,12 +136,18 @@ impl Editor {
             .is_ok();
 
         let theme_name = config.theme.clone();
+        let editor_mode = config.editor_mode.clone().unwrap_or(EditorMode::Vim);
+        let show_mode_selector = config.editor_mode.is_none();
+        let initial_mode = match editor_mode {
+            EditorMode::Vim => Mode::Normal,
+            EditorMode::Normie => Mode::Normie,
+        };
         let mut editor = Self {
             exit: false,
             buffer_pool,
             views: vec![view],
             active_view_idx: 0,
-            mode: Mode::Normal,
+            mode: initial_mode,
             pending_key: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -113,6 +157,9 @@ impl Editor {
             modified: false,
             space_pressed: false,
             ctrl_w_pressed: false,
+            key_registry: config.build_registry(),
+            pending_keys: Vec::new(),
+            awaiting_char_action: None,
             plugin_manager,
             theme_manager: ThemeManager::new(),
             split_root: SplitNode::single(0),
@@ -127,10 +174,19 @@ impl Editor {
             lsp_picker_active: false,
             completion: CompletionState::new(),
             show_welcome: true,
+            show_mode_selector,
+            editor_mode,
+            show_keybindings: false,
             rg_available,
             search_query: String::new(),
             search_buffer: String::new(),
             search_direction: SearchDirection::Forward,
+            jump_list: Vec::new(),
+            jump_list_idx: 0,
+            pending_definition_request: None,
+            show_settings: false,
+            settings_selected: 0,
+            settings_scroll: 0,
         };
         editor.switch_theme(&theme_name);
         editor.apply_theme_to_plugins();
@@ -263,13 +319,21 @@ impl Editor {
         self.buffer_pool.get_mut(buffer_id)
     }
 
+    /// The base editing mode: Normal for vim, Normie for normie.
+    pub fn default_mode(&self) -> Mode {
+        match self.editor_mode {
+            EditorMode::Vim => Mode::Normal,
+            EditorMode::Normie => Mode::Normie,
+        }
+    }
+
     // Mode transitions
     pub fn enter_insert_mode(&mut self) {
         self.mode = Mode::Insert;
     }
 
     pub fn enter_normal_mode(&mut self) {
-        self.mode = Mode::Normal;
+        self.mode = self.default_mode();
         self.search_query.clear();
         let view = &mut self.views[self.active_view_idx];
         view.set_visual_start(None);
@@ -370,7 +434,7 @@ impl Editor {
     pub fn handle_search_mode(&mut self, key_event: crossterm::event::KeyEvent) {
         match key_event.code {
             crossterm::event::KeyCode::Esc => {
-                self.mode = Mode::Normal;
+                self.mode = self.default_mode();
                 self.search_buffer.clear();
                 self.command_buffer.clear();
             }
@@ -378,7 +442,7 @@ impl Editor {
                 self.search_query = self.search_buffer.clone();
                 self.search_buffer.clear();
                 self.command_buffer.clear();
-                self.mode = Mode::Normal;
+                self.mode = self.default_mode();
                 if !self.search_query.is_empty() {
                     self.jump_to_next_search_match();
                 }
@@ -1013,7 +1077,7 @@ impl Editor {
                 };
 
                 // Ghost text only for the active view in insert mode
-                let ghost = if is_active && self.mode == Mode::Insert {
+                let ghost = if is_active && matches!(self.mode, Mode::Insert | Mode::Normie) {
                     self.completion.ghost_text()
                 } else {
                     None
@@ -1055,14 +1119,20 @@ impl Editor {
             }
         }
 
-        // Render welcome screen
+        // Render mode selector or welcome screen
+        if self.show_mode_selector {
+            self.render_mode_selector(area, frame.buffer_mut());
+            return;
+        }
         if self.show_welcome {
             self.render_welcome(area, frame.buffer_mut());
-        }
-
-        // Hide cursor behind welcome screen
-        if self.show_welcome {
             return;
+        }
+        if self.show_keybindings {
+            self.render_keybindings_help(area, frame.buffer_mut());
+        }
+        if self.show_settings {
+            self.render_settings(area, frame.buffer_mut());
         }
 
         // Set terminal cursor position
@@ -1102,7 +1172,7 @@ impl Editor {
 
         // Set cursor shape based on mode (block in normal, bar in insert)
         let cursor_style = match self.mode {
-            Mode::Insert => SetCursorStyle::SteadyBar,
+            Mode::Insert | Mode::Normie => SetCursorStyle::SteadyBar,
             Mode::Command | Mode::Search | Mode::FuzzyFinder => SetCursorStyle::SteadyBar,
             _ => SetCursorStyle::SteadyBlock,
         };
@@ -1120,21 +1190,42 @@ impl Editor {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
+        // Mode selector: 'v' for vim, any other key for normie
+        if self.show_mode_selector {
+            self.show_mode_selector = false;
+            self.show_welcome = false;
+            let chosen = if key_event.code == crossterm::event::KeyCode::Char('v') {
+                EditorMode::Vim
+            } else {
+                EditorMode::Normie
+            };
+            self.editor_mode = chosen.clone();
+            self.mode = self.default_mode();
+            // Persist the choice
+            self.config.editor_mode = Some(chosen);
+            self.config.save();
+            return;
+        }
+
+        if self.show_keybindings {
+            // Any key dismisses the help popup (F1 toggles via action, Esc/other just close)
+            if key_event.code != crossterm::event::KeyCode::F(1) {
+                self.show_keybindings = false;
+            } else {
+                // F1 again toggles off
+                self.show_keybindings = false;
+            }
+            return;
+        }
+
+        if self.show_settings {
+            self.handle_settings_key(key_event);
+            return;
+        }
+
         if self.show_welcome {
             self.show_welcome = false;
             // Let the keypress fall through to normal handling
-        }
-
-        // Ctrl+L accepts ghost text (first suggestion) — works even without popup visible
-        // This keybinding is reserved for AI completions in the future.
-        if self.mode == Mode::Insert
-            && key_event.code == crossterm::event::KeyCode::Char('l')
-            && key_event.modifiers.contains(KeyModifiers::CONTROL)
-        {
-            if self.completion.ghost_text().is_some() {
-                self.accept_ghost_text();
-                return;
-            }
         }
 
         // Handle completion popup keys when popup is active
@@ -1171,6 +1262,7 @@ impl Editor {
 
         // Check if any plugin is active and should handle the event
         if self.plugin_manager.has_active_plugin() {
+            let dm = self.default_mode();
             let view = &mut self.views[self.active_view_idx];
             let primary_idx = view.primary_cursor_idx;
             let buffer_id = view.buffer_id;
@@ -1180,6 +1272,7 @@ impl Editor {
                 buffer_id,
                 cursor: &mut view.cursor_states[primary_idx].cursor,
                 mode: &mut self.mode,
+                default_mode: dm,
                 filename: &self.filename,
                 modified: &mut self.modified,
             };
@@ -1204,23 +1297,216 @@ impl Editor {
         }
 
         match self.mode {
-            Mode::Normal => self.handle_normal_mode(key_event),
-            Mode::Insert => self.handle_insert_mode(key_event),
-            Mode::Visual => self.handle_visual_mode(key_event),
-            Mode::VisualLine => self.handle_visual_line_mode(key_event),
+            Mode::Normal | Mode::Insert | Mode::Visual | Mode::VisualLine | Mode::Normie => {
+                self.dispatch_via_registry(key_event);
+            }
             Mode::Command => self.handle_command_mode(key_event),
             Mode::Search => self.handle_search_mode(key_event),
             Mode::FuzzyFinder => {}
         }
 
-        // After insert mode keystrokes, update completion
-        if self.mode == Mode::Insert {
+        // After insert/normie mode keystrokes, update completion
+        if self.mode == Mode::Insert || self.mode == Mode::Normie {
             match key_event.code {
                 crossterm::event::KeyCode::Char(_) | crossterm::event::KeyCode::Backspace => {
                     self.post_insert_completion_update();
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn dispatch_via_registry(&mut self, key_event: KeyEvent) {
+        use crate::keybindings::{Action, KeyCombo, DispatchResult};
+        use crate::keybindings::registry::ModeKey;
+
+        let combo = KeyCombo::from_event(&key_event);
+
+        // Handle awaiting char argument (for f/F)
+        if let Some(action) = self.awaiting_char_action.take() {
+            if let crate::keybindings::key::Key::Char(c) = combo.key {
+                match action {
+                    Action::FindCharForward => self.find_char_forward(c),
+                    Action::FindCharBackward => self.find_char_backward(c),
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        let mode_key = match ModeKey::from_mode(&self.mode) {
+            Some(mk) => mk,
+            None => return,
+        };
+
+        let result = self.key_registry.resolve(&mode_key, combo.clone(), &mut self.pending_keys);
+
+        match result {
+            DispatchResult::Executed(action) => {
+                self.execute_action(action);
+            }
+            DispatchResult::Pending => {
+                // Waiting for more keys in a sequence
+            }
+            DispatchResult::AwaitingChar(action) => {
+                self.awaiting_char_action = Some(action);
+            }
+            DispatchResult::Unbound => {
+                // In Insert/Normie mode, unbound chars insert text
+                if matches!(self.mode, Mode::Insert | Mode::Normie) {
+                    match combo.key {
+                        crate::keybindings::key::Key::Char(c) if !combo.ctrl && !combo.alt => {
+                            self.insert_char(c);
+                        }
+                        crate::keybindings::key::Key::Tab => {
+                            self.insert_char('\t');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn execute_action(&mut self, action: crate::keybindings::Action) {
+        use crate::keybindings::Action;
+        match action {
+            // Mode transitions
+            Action::EnterNormalMode => self.enter_normal_mode(),
+            Action::EnterInsertMode => self.enter_insert_mode(),
+            Action::EnterVisualMode => self.enter_visual_mode(),
+            Action::EnterVisualLineMode => self.enter_visual_line_mode(),
+            Action::EnterCommandMode => self.enter_command_mode(),
+            Action::EnterSearchMode => self.enter_search_mode(),
+            Action::Append => self.append(),
+            Action::OpenLineBelow => self.open_line_below(),
+            Action::OpenLineAbove => self.open_line_above(),
+
+            // Navigation
+            Action::MoveCursorLeft => self.move_cursor_left(),
+            Action::MoveCursorDown => self.move_cursor_down(),
+            Action::MoveCursorUp => self.move_cursor_up(),
+            Action::MoveCursorRight => self.move_cursor_right(),
+            Action::MoveWordForward => self.move_word_forward(),
+            Action::MoveWORDForward => self.move_WORD_forward(),
+            Action::MoveWordBackward => self.move_word_backward(),
+            Action::MoveWORDBackward => self.move_WORD_backward(),
+            Action::MoveToLineStart => self.move_to_line_start(),
+            Action::MoveToFirstNonWhitespace => self.move_to_first_non_whitespace(),
+            Action::MoveToLineEnd => self.move_to_line_end(),
+            Action::GotoFirstLine => self.goto_first_line(),
+            Action::GotoLastLine => self.goto_last_line(),
+            Action::GotoMatchingBracket => self.goto_matching_bracket(),
+            Action::FindCharForward | Action::FindCharBackward => {
+                // Handled via AwaitingChar path
+            }
+            Action::GoToDefinition => self.goto_definition(),
+            Action::JumpBack => self.jump_back(),
+
+            // Editing
+            Action::DeleteChar => self.delete_char(),
+            Action::DeleteLine => self.delete_line(),
+            Action::DeleteWord => self.delete_word(),
+            Action::DeleteToLineEnd => self.delete_to_line_end(),
+            Action::DeleteToLineStart => self.delete_to_line_start(),
+            Action::YankLine => self.yank_line(),
+            Action::YankWord => self.yank_word(),
+            Action::YankToLineEnd => self.yank_to_line_end(),
+            Action::YankToLineStart => self.yank_to_line_start(),
+            Action::PasteAfter => self.paste_after(),
+            Action::PasteBefore => self.paste_before(),
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
+            Action::InsertNewline => self.insert_newline(),
+            Action::Backspace => self.backspace(),
+
+            // Visual mode
+            Action::DeleteVisualSelection => self.delete_visual_selection(),
+            Action::ChangeVisualSelection => self.change_visual_selection(),
+            Action::AppendAfterVisualSelection => self.append_after_visual_selection(),
+            Action::YankVisualSelection => self.yank_visual_selection(),
+
+            // Search
+            Action::SearchNext => self.search_next(),
+            Action::SearchPrev => self.search_prev(),
+
+            // Scroll
+            Action::PageDown => self.page_down(),
+            Action::PageUp => self.page_up(),
+            Action::HalfPageDown => self.half_page_down(),
+            Action::HalfPageUp => self.half_page_up(),
+
+            // Multi-cursor
+            Action::SelectWordOrNextMatch => self.select_word_or_next_match(),
+
+            // Splits
+            Action::SplitHorizontal => self.split_horizontal(),
+            Action::SplitVertical => self.split_vertical(),
+            Action::FocusNextView => self.focus_next_view(),
+            Action::FocusDirectionLeft => self.focus_direction_left(),
+            Action::FocusDirectionDown => self.focus_direction_down(),
+            Action::FocusDirectionUp => self.focus_direction_up(),
+            Action::FocusDirectionRight => self.focus_direction_right(),
+            Action::CloseCurrentView => self.close_current_view(),
+
+            // Fuzzy finder / pickers
+            Action::FuzzyFindFiles => {
+                if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+                    if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                        fuzzy_plugin.activate(crate::plugins::js_fuzzy_finder::FuzzyFinderType::Files);
+                        self.mode = Mode::FuzzyFinder;
+                    }
+                }
+            }
+            Action::FuzzyGrep => {
+                if let Some(plugin) = self.plugin_manager.get_mut("js_fuzzy_finder") {
+                    if let Some(fuzzy_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::js_fuzzy_finder::JsFuzzyFinderPlugin>() {
+                        fuzzy_plugin.activate(crate::plugins::js_fuzzy_finder::FuzzyFinderType::Grep);
+                        self.mode = Mode::FuzzyFinder;
+                    }
+                }
+            }
+            Action::ThemePicker => self.show_theme_picker(),
+            Action::BufferPicker => self.show_buffer_picker(),
+
+            // Completion
+            Action::AcceptCompletion => self.accept_completion(),
+            Action::CompletionNext => self.completion.navigate(1),
+            Action::CompletionPrev => self.completion.navigate(-1),
+            Action::DismissCompletion => self.completion.dismiss(),
+            Action::AcceptGhostText => self.accept_ghost_text(),
+
+            // File operations
+            Action::SaveFile => self.save_file(),
+
+            // Lifecycle
+            Action::Exit => self.exit = true,
+
+            Action::OpenGit => {
+                if let Some(plugin) = self.plugin_manager.get_mut("git_client") {
+                    if let Some(git_plugin) = plugin.as_any_mut().downcast_mut::<crate::plugins::git_client::GitClientPlugin>() {
+                        let theme = self.theme_manager.current();
+                        git_plugin.set_colors(
+                            theme.ui.popup_border,
+                            theme.ui.background,
+                            theme.ui.foreground,
+                            theme.ui.visual_selection_bg,
+                            theme.ui.status_mode_normal,
+                            theme.ui.line_number_fg,
+                        );
+                        git_plugin.activate_git();
+                    }
+                }
+            }
+            Action::ShowKeybindings => {
+                self.show_keybindings = !self.show_keybindings;
+            }
+            Action::OpenSettings => {
+                self.show_settings = !self.show_settings;
+                self.settings_selected = 0;
+                self.settings_scroll = 0;
+            }
+            Action::Noop => {}
         }
     }
 
@@ -1331,10 +1617,111 @@ impl Editor {
         }
     }
 
+    // ── Jump list ──────────────────────────────────────────────────────
+
+    fn push_jump(&mut self) {
+        let view = &self.views[self.active_view_idx];
+        let loc = JumpLocation {
+            filename: self.filename.clone(),
+            buffer_id: view.buffer_id,
+            row: view.cursor().row,
+            col: view.cursor().col,
+        };
+        // Truncate forward history when pushing a new jump
+        self.jump_list.truncate(self.jump_list_idx);
+        self.jump_list.push(loc);
+        self.jump_list_idx = self.jump_list.len();
+    }
+
+    fn jump_back(&mut self) {
+        if self.jump_list_idx == 0 || self.jump_list.is_empty() {
+            return;
+        }
+        // If at the end of the list, save current position first
+        if self.jump_list_idx == self.jump_list.len() {
+            let view = &self.views[self.active_view_idx];
+            let loc = JumpLocation {
+                filename: self.filename.clone(),
+                buffer_id: view.buffer_id,
+                row: view.cursor().row,
+                col: view.cursor().col,
+            };
+            self.jump_list.push(loc);
+        }
+        self.jump_list_idx -= 1;
+        let loc = self.jump_list[self.jump_list_idx].clone();
+        self.jump_to_location(&loc);
+    }
+
+    fn jump_to_location(&mut self, loc: &JumpLocation) {
+        // If it's a different file, open it
+        if let Some(ref fname) = loc.filename {
+            if self.filename.as_deref() != Some(fname) {
+                self.open_file_in_view(fname);
+            }
+        }
+        // Set cursor position
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let row = loc.row.min(buffer.lines.len().saturating_sub(1));
+        let col = loc.col.min(buffer.lines[row].char_count().saturating_sub(1));
+        view.cursor_states[view.primary_cursor_idx].cursor.row = row;
+        view.cursor_states[view.primary_cursor_idx].cursor.col = col;
+        view.cursor_states[view.primary_cursor_idx].cursor.desired_col = col;
+    }
+
+    // ── Go to definition ─────────────────────────────────────────────
+
+    fn goto_definition(&mut self) {
+        let filename = match &self.filename {
+            Some(f) => f.clone(),
+            None => return,
+        };
+        let ext = match std::path::Path::new(&filename)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            Some(e) => e.to_string(),
+            None => return,
+        };
+        let server_config = match self.config.server_for_extension(&ext) {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let abs_path = std::fs::canonicalize(&filename)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&filename));
+        let uri = format!("file://{}", abs_path.display());
+
+        let view = &self.views[self.active_view_idx];
+        let cursor_row = view.cursor().row;
+        let cursor_col = view.cursor().col;
+
+        // Push current position to jump list before jumping
+        self.push_jump();
+
+        if let Some(id) = self.lsp_manager.request_definition(
+            &server_config.name,
+            &uri,
+            cursor_row,
+            cursor_col,
+        ) {
+            self.pending_definition_request = Some(id);
+        }
+    }
+
     /// Process LSP responses and route completion results to CompletionState.
     fn process_lsp_responses(&mut self) {
         let responses: Vec<_> = self.lsp_manager.pending_responses.drain(..).collect();
         for resp in responses {
+            // Check if this is a definition response
+            if self.pending_definition_request == Some(resp.id) {
+                self.pending_definition_request = None;
+                if let Some(result) = resp.result {
+                    self.handle_definition_response(&result);
+                }
+                continue;
+            }
             // Check if this is a completion response we're waiting for
             if self.completion.pending_request_id == Some(resp.id) {
                 self.completion.pending_request_id = None;
@@ -1350,6 +1737,64 @@ impl Editor {
                 }
             }
         }
+    }
+
+    fn handle_definition_response(&mut self, result: &serde_json::Value) {
+        // LSP definition can return Location, Location[], or LocationLink[]
+        let location = if result.is_array() {
+            result.as_array().and_then(|arr| arr.first())
+        } else if result.is_object() {
+            Some(result)
+        } else {
+            None
+        };
+
+        let location = match location {
+            Some(loc) => loc,
+            None => return,
+        };
+
+        // Handle LocationLink (has targetUri/targetRange) or Location (has uri/range)
+        let (uri, line, col) = if let Some(target_uri) = location.get("targetUri") {
+            let range = location.get("targetSelectionRange")
+                .or_else(|| location.get("targetRange"));
+            let start = range.and_then(|r| r.get("start"));
+            (
+                target_uri.as_str().unwrap_or(""),
+                start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize,
+                start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize,
+            )
+        } else if let Some(uri) = location.get("uri") {
+            let start = location.get("range").and_then(|r| r.get("start"));
+            (
+                uri.as_str().unwrap_or(""),
+                start.and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as usize,
+                start.and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as usize,
+            )
+        } else {
+            return;
+        };
+
+        // Convert file:// URI to path
+        let path = if let Some(p) = uri.strip_prefix("file://") {
+            p.to_string()
+        } else {
+            return;
+        };
+
+        // Open the file and jump to the position
+        self.open_file_in_view(&path);
+
+        let view = &mut self.views[self.active_view_idx];
+        let buffer = self.buffer_pool.get(view.buffer_id);
+        let row = line.min(buffer.lines.len().saturating_sub(1));
+        let col = col.min(buffer.lines[row].char_count().saturating_sub(1));
+        view.cursor_states[view.primary_cursor_idx].cursor.row = row;
+        view.cursor_states[view.primary_cursor_idx].cursor.col = col;
+        view.cursor_states[view.primary_cursor_idx].cursor.desired_col = col;
+        // Center the view on the definition
+        let area_height = 40; // approximate
+        view.scroll_offset = row.saturating_sub(area_height / 2);
     }
 
     /// Accept the ghost text (first filtered completion item) via Ctrl+L.
@@ -1476,26 +1921,51 @@ impl Editor {
             lines.push(Line::from(""));
         }
 
-        let shortcuts = [
-            ("  Space f f", "  Find file"),
-            ("  Space /  ", "  Grep in project"),
-            ("  Space b b", "  Buffer picker"),
-            ("  Space f t", "  Switch theme"),
-            ("", ""),
-            ("  :e <file>", "  Open file"),
-            ("  :w       ", "  Save"),
-            ("  :q       ", "  Quit"),
-            ("  :wq      ", "  Save & quit"),
-            ("", ""),
-            ("  :sp      ", "  Split horizontal"),
-            ("  :vs      ", "  Split vertical"),
-            ("  Ctrl+W q ", "  Close split"),
-            ("", ""),
-            ("  i        ", "  Insert mode"),
-            ("  v / V    ", "  Visual / Visual Line"),
-            ("  u        ", "  Undo"),
-            ("  Ctrl+N   ", "  Multi-cursor select"),
-        ];
+        let shortcuts: Vec<(&str, &str)> = if self.editor_mode == EditorMode::Normie {
+            vec![
+                ("  Ctrl+O   ", "  Find file"),
+                ("  Ctrl+P   ", "  Grep in project"),
+                ("  Ctrl+F   ", "  Search in file"),
+                ("", ""),
+                ("  Ctrl+S   ", "  Save"),
+                ("  Ctrl+Q   ", "  Quit"),
+                ("  Ctrl+W   ", "  Close split"),
+                ("", ""),
+                ("  Ctrl+Z   ", "  Undo"),
+                ("  Ctrl+Y   ", "  Redo"),
+                ("  Ctrl+D   ", "  Multi-cursor select"),
+                ("", ""),
+                ("  Ctrl+G   ", "  Git client"),
+                ("  F1       ", "  Keybinding help"),
+                ("", ""),
+                ("  Ctrl+←/→ ", "  Word navigation"),
+                ("  Ctrl+Home", "  Go to start"),
+                ("  Ctrl+End ", "  Go to end"),
+            ]
+        } else {
+            vec![
+                ("  Space f f", "  Find file"),
+                ("  Space /  ", "  Grep in project"),
+                ("  Space b b", "  Buffer picker"),
+                ("  Space f t", "  Switch theme"),
+                ("", ""),
+                ("  :e <file>", "  Open file"),
+                ("  :w       ", "  Save"),
+                ("  :q       ", "  Quit"),
+                ("  :wq      ", "  Save & quit"),
+                ("", ""),
+                ("  :sp      ", "  Split horizontal"),
+                ("  :vs      ", "  Split vertical"),
+                ("  Ctrl+W q ", "  Close split"),
+                ("", ""),
+                ("  i        ", "  Insert mode"),
+                ("  v / V    ", "  Visual / Visual Line"),
+                ("  u        ", "  Undo"),
+                ("  Ctrl+N   ", "  Multi-cursor select"),
+                ("  Space g  ", "  Git client"),
+                ("  F1       ", "  Keybinding help"),
+            ]
+        };
 
         for (key, desc) in &shortcuts {
             if key.is_empty() {
@@ -1517,6 +1987,418 @@ impl Editor {
         let text = Text::from(lines);
         let height = text.lines.len() as u16 + 2;
         let width = 40u16;
+        let popup_x = area.width.saturating_sub(width) / 2;
+        let popup_y = area.height.saturating_sub(height) / 2;
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: width.min(area.width),
+            height: height.min(area.height),
+        };
+
+        Clear.render(popup_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(accent))
+            .style(Style::default().bg(theme.ui.background).fg(fg));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+        Paragraph::new(text).render(inner, buf);
+    }
+
+    fn render_keybindings_help(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::text::{Line, Span, Text};
+        use ratatui::widgets::{Block, Borders, Paragraph};
+        use ratatui::style::Style;
+
+        let theme = self.theme_manager.current();
+        let accent = theme.ui.popup_border;
+        let dim = theme.ui.line_number_fg;
+        let fg = theme.ui.foreground;
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        let title = if self.editor_mode == EditorMode::Normie {
+            "  Keybindings (Normal Mode)"
+        } else {
+            "  Keybindings (Vim Mode)"
+        };
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            title,
+            Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        let bindings: Vec<(&str, &str)> = if self.editor_mode == EditorMode::Normie {
+            vec![
+                ("  Ctrl+S       ", "Save"),
+                ("  Ctrl+Q       ", "Quit"),
+                ("  Ctrl+Z       ", "Undo"),
+                ("  Ctrl+Y       ", "Redo"),
+                ("  Ctrl+F       ", "Search"),
+                ("  Ctrl+D       ", "Multi-cursor select"),
+                ("  Ctrl+O       ", "Find file"),
+                ("  Ctrl+P       ", "Grep in project"),
+                ("  Ctrl+W       ", "Close split"),
+                ("  Ctrl+L       ", "Accept ghost text"),
+                ("  F2           ", "Settings"),
+                ("", ""),
+                ("  Arrows       ", "Navigate"),
+                ("  Ctrl+←/→     ", "Word navigation"),
+                ("  Home / End   ", "Line start / end"),
+                ("  Ctrl+Home/End", "File start / end"),
+                ("  PgUp / PgDn  ", "Page up / down"),
+                ("", ""),
+                ("  Enter        ", "New line"),
+                ("  Backspace    ", "Delete backward"),
+                ("  Delete       ", "Delete forward"),
+                ("  F1           ", "This help"),
+            ]
+        } else {
+            vec![
+                ("  i / a        ", "Insert / Append"),
+                ("  o / O        ", "Open line below / above"),
+                ("  Esc          ", "Normal mode"),
+                ("  v / V        ", "Visual / Visual Line"),
+                ("  :            ", "Command mode"),
+                ("  /            ", "Search"),
+                ("", ""),
+                ("  h j k l      ", "Navigate"),
+                ("  w / b        ", "Word forward / back"),
+                ("  0 / $ / ^    ", "Line start / end / first char"),
+                ("  gg / G       ", "File start / end"),
+                ("  %            ", "Matching bracket"),
+                ("  f / F        ", "Find char forward / back"),
+                ("", ""),
+                ("  dd / dw / d$ ", "Delete line / word / to end"),
+                ("  yy / yw / y$ ", "Yank line / word / to end"),
+                ("  p / P        ", "Paste after / before"),
+                ("  x            ", "Delete char"),
+                ("  u / Ctrl+R   ", "Undo / Redo"),
+                ("", ""),
+                ("  Ctrl+N       ", "Multi-cursor select"),
+                ("  Ctrl+D/U     ", "Half page down / up"),
+                ("  Ctrl+O       ", "Jump back"),
+                ("  Ctrl+F/B     ", "Page down / up"),
+                ("  gd           ", "Go to definition (LSP)"),
+                ("", ""),
+                ("  Space f f    ", "Find file"),
+                ("  Space /      ", "Grep in project"),
+                ("  Space b b    ", "Buffer picker"),
+                ("  Space f t    ", "Theme picker"),
+                ("  Space g      ", "Git client"),
+                ("", ""),
+                ("  Ctrl+W s/v   ", "Split horiz / vert"),
+                ("  Ctrl+W hjkl  ", "Focus split"),
+                ("  Ctrl+W q     ", "Close split"),
+                ("  F1           ", "This help"),
+                ("  F2           ", "Settings"),
+            ]
+        };
+
+        for (key, desc) in &bindings {
+            if key.is_empty() {
+                lines.push(Line::from(""));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(*key, Style::default().fg(accent)),
+                    Span::styled(*desc, Style::default().fg(dim)),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Press any key to close",
+            Style::default().fg(dim),
+        )));
+
+        let text = Text::from(lines);
+        let height = (text.lines.len() as u16 + 2).min(area.height);
+        let width = 48u16;
+        let popup_x = area.width.saturating_sub(width) / 2;
+        let popup_y = area.height.saturating_sub(height) / 2;
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: width.min(area.width),
+            height,
+        };
+
+        Clear.render(popup_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(accent))
+            .style(Style::default().bg(theme.ui.background).fg(fg));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+        Paragraph::new(text).render(inner, buf);
+    }
+
+    // ── Settings dialog ──────────────────────────────────────────────
+
+    fn settings_items(&self) -> Vec<SettingsItem> {
+        let mut items = Vec::new();
+
+        // Editor mode
+        let mode_str = match self.editor_mode {
+            EditorMode::Vim => "Vim",
+            EditorMode::Normie => "Normal",
+        };
+        items.push(SettingsItem {
+            label: "Editor Mode".to_string(),
+            value: mode_str.to_string(),
+            kind: SettingsItemKind::EditorMode,
+        });
+
+        // Theme
+        items.push(SettingsItem {
+            label: "Theme".to_string(),
+            value: self.theme_manager.current_name().to_string(),
+            kind: SettingsItemKind::Theme,
+        });
+
+        // Separator
+        items.push(SettingsItem {
+            label: String::new(),
+            value: String::new(),
+            kind: SettingsItemKind::Separator,
+        });
+
+        // LSP servers
+        for server in &self.config.lsp.servers {
+            let status = if server.enabled {
+                self.lsp_manager
+                    .status
+                    .get(&server.name)
+                    .map(|s| s.as_str())
+                    .unwrap_or("stopped")
+            } else {
+                "disabled"
+            };
+            items.push(SettingsItem {
+                label: format!("{} ({})", server.name, server.language),
+                value: status.to_string(),
+                kind: SettingsItemKind::LspServer(server.name.clone()),
+            });
+        }
+
+        items
+    }
+
+    fn settings_selectable_count(&self) -> usize {
+        self.settings_items().iter().filter(|i| i.kind != SettingsItemKind::Separator).count()
+    }
+
+    fn settings_item_at_selection(&self, sel: usize) -> Option<SettingsItem> {
+        let items = self.settings_items();
+        let mut selectable_idx = 0;
+        for item in items {
+            if item.kind == SettingsItemKind::Separator {
+                continue;
+            }
+            if selectable_idx == sel {
+                return Some(item);
+            }
+            selectable_idx += 1;
+        }
+        None
+    }
+
+    fn handle_settings_key(&mut self, key_event: KeyEvent) {
+        use crossterm::event::KeyCode;
+
+        let count = self.settings_selectable_count();
+        match key_event.code {
+            KeyCode::Esc | KeyCode::F(2) => {
+                self.show_settings = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.settings_selected > 0 {
+                    self.settings_selected -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.settings_selected + 1 < count {
+                    self.settings_selected += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.activate_settings_item();
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_settings_item(&mut self) {
+        let item = match self.settings_item_at_selection(self.settings_selected) {
+            Some(i) => i,
+            None => return,
+        };
+        match item.kind {
+            SettingsItemKind::EditorMode => {
+                let new_mode = match self.editor_mode {
+                    EditorMode::Vim => EditorMode::Normie,
+                    EditorMode::Normie => EditorMode::Vim,
+                };
+                self.editor_mode = new_mode.clone();
+                self.mode = self.default_mode();
+                self.config.editor_mode = Some(new_mode);
+                self.config.save();
+            }
+            SettingsItemKind::Theme => {
+                self.show_settings = false;
+                self.show_theme_picker();
+            }
+            SettingsItemKind::LspServer(ref name) => {
+                if let Some(server) = self.config.lsp.servers.iter_mut().find(|s| s.name == *name) {
+                    server.enabled = !server.enabled;
+                }
+                self.config.save();
+            }
+            SettingsItemKind::Separator => {}
+        }
+    }
+
+    fn render_settings(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::text::{Line, Span, Text};
+        use ratatui::widgets::{Block, Borders, Paragraph};
+        use ratatui::style::{Modifier, Style};
+
+        let theme = self.theme_manager.current();
+        let accent = theme.ui.popup_border;
+        let dim = theme.ui.line_number_fg;
+        let fg = theme.ui.foreground;
+        let sel_bg = theme.ui.visual_selection_bg;
+
+        let items = self.settings_items();
+        let mut lines: Vec<Line> = Vec::new();
+        let mut selectable_idx = 0;
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Settings",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        for item in &items {
+            if item.kind == SettingsItemKind::Separator {
+                lines.push(Line::from(""));
+                continue;
+            }
+
+            let is_selected = selectable_idx == self.settings_selected;
+            let key_style = if is_selected {
+                Style::default().fg(accent).bg(sel_bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(fg)
+            };
+            let val_style = if is_selected {
+                Style::default().fg(dim).bg(sel_bg)
+            } else {
+                Style::default().fg(dim)
+            };
+
+            let label = format!("  {:<30}", item.label);
+            let value = format!(" {}", item.value);
+
+            lines.push(Line::from(vec![
+                Span::styled(label, key_style),
+                Span::styled(value, val_style),
+            ]));
+            selectable_idx += 1;
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ↑↓ navigate  Enter toggle  Esc close",
+            Style::default().fg(dim),
+        )));
+
+        let text = Text::from(lines);
+        let height = (text.lines.len() as u16 + 2).min(area.height);
+        let width = 56u16;
+        let popup_x = area.width.saturating_sub(width) / 2;
+        let popup_y = area.height.saturating_sub(height) / 2;
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: width.min(area.width),
+            height,
+        };
+
+        Clear.render(popup_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(accent))
+            .title(" Settings (F2) ")
+            .title_style(Style::default().fg(accent))
+            .style(Style::default().bg(theme.ui.background).fg(fg));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+        Paragraph::new(text).render(inner, buf);
+    }
+
+    fn render_mode_selector(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::text::{Line, Span, Text};
+        use ratatui::widgets::{Block, Borders, Paragraph};
+        use ratatui::style::Style;
+
+        let theme = self.theme_manager.current();
+        let accent = theme.ui.popup_border;
+        let dim = theme.ui.line_number_fg;
+        let fg = theme.ui.foreground;
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  y editor",
+                Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Choose your editing mode:",
+                Style::default().fg(fg),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  v", Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled("  Vim mode", Style::default().fg(dim)),
+            ]),
+            Line::from(Span::styled(
+                "     Modal editing (hjkl, i/Esc, :w)",
+                Style::default().fg(dim),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  any other key", Style::default().fg(accent).add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled("  Normal mode", Style::default().fg(dim)),
+            ]),
+            Line::from(Span::styled(
+                "     Standard editing (Ctrl+S, arrows)",
+                Style::default().fg(dim),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Choice is saved to ~/.config/y/config.toml",
+                Style::default().fg(dim),
+            )),
+        ];
+
+        let text = Text::from(lines);
+        let height = text.lines.len() as u16 + 2;
+        let width = 50u16;
         let popup_x = area.width.saturating_sub(width) / 2;
         let popup_y = area.height.saturating_sub(height) / 2;
 

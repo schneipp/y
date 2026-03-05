@@ -1,13 +1,42 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorMode {
+    Vim,
+    Normie,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// None means the user hasn't chosen yet (show mode selector on first launch).
+    #[serde(default)]
+    pub editor_mode: Option<EditorMode>,
     #[serde(default)]
     pub lsp: LspConfig,
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KeybindingsConfig {
+    #[serde(default)]
+    pub normal: HashMap<String, String>,
+    #[serde(default)]
+    pub insert: HashMap<String, String>,
+    #[serde(default)]
+    pub visual: HashMap<String, String>,
+    #[serde(default)]
+    pub visual_line: HashMap<String, String>,
+    #[serde(default)]
+    pub completion: HashMap<String, String>,
+    #[serde(default)]
+    pub normie: HashMap<String, String>,
 }
 
 fn default_theme() -> String {
@@ -41,7 +70,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            editor_mode: None,
             lsp: LspConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         }
     }
 }
@@ -82,6 +113,40 @@ impl Config {
         if let Ok(content) = toml::to_string_pretty(self) {
             let _ = fs::write(&path, content);
         }
+    }
+
+    /// Build a keybinding registry from defaults + user overrides.
+    pub fn build_registry(&self) -> crate::keybindings::KeybindingRegistry {
+        use crate::keybindings::defaults::build_default_registry;
+        use crate::keybindings::key::parse_key_string;
+        use crate::keybindings::registry::ModeKey;
+
+        let mut reg = build_default_registry();
+
+        let mode_sections: &[(ModeKey, &HashMap<String, String>)] = &[
+            (ModeKey::Normal, &self.keybindings.normal),
+            (ModeKey::Insert, &self.keybindings.insert),
+            (ModeKey::Visual, &self.keybindings.visual),
+            (ModeKey::VisualLine, &self.keybindings.visual_line),
+            (ModeKey::Completion, &self.keybindings.completion),
+            (ModeKey::Normie, &self.keybindings.normie),
+        ];
+
+        for (mode_key, bindings) in mode_sections {
+            for (key_str, action_str) in *bindings {
+                let keys = match parse_key_string(key_str) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                };
+                let action: crate::keybindings::Action = match serde_json::from_str(&format!("\"{}\"", action_str)) {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                reg.bind(mode_key.clone(), keys, action);
+            }
+        }
+
+        reg
     }
 
     /// Merge hardcoded known servers into config, adding any new ones not already present.

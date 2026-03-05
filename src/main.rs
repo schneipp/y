@@ -11,6 +11,7 @@ pub mod config;
 pub mod cursor;
 pub mod editor;
 pub mod input;
+pub mod keybindings;
 pub mod layout;
 pub mod lsp;
 pub mod mode;

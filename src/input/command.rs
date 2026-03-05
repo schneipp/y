@@ -1,13 +1,12 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::editor::Editor;
-use crate::mode::Mode;
 
 impl Editor {
     pub fn handle_command_mode(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => {
-                self.mode = Mode::Normal;
+                self.mode = self.default_mode();
                 self.command_buffer.clear();
             }
             KeyCode::Enter => self.execute_command(),
@@ -58,11 +57,16 @@ impl Editor {
                     self.command_buffer.clear();
                     return;
                 }
+                "git" => {
+                    self.execute_action(crate::keybindings::Action::OpenGit);
+                    self.command_buffer.clear();
+                    return;
+                }
                 _ => {}
             }
         }
 
-        self.mode = Mode::Normal;
+        self.mode = self.default_mode();
         self.command_buffer.clear();
     }
 }

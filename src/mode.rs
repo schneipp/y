@@ -7,6 +7,7 @@ pub enum Mode {
     Command,
     Search,
     FuzzyFinder,
+    Normie,
 }
 
 #[derive(Debug, PartialEq, Clone)]

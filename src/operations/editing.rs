@@ -370,7 +370,7 @@ impl Editor {
             .collect();
         view.primary_cursor_idx = 0;
 
-        self.mode = crate::mode::Mode::Normal;
+        self.mode = self.default_mode();
     }
 
     /// Delete visual selections across all cursors and enter insert mode (multi-cursor `c`).

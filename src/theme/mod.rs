@@ -84,6 +84,10 @@ impl ThemeManager {
         }
     }
 
+    pub fn current_name(&self) -> &str {
+        &self.themes[self.current_idx].name
+    }
+
     pub fn list(&self) -> Vec<&str> {
         self.themes.iter().map(|t| t.name.as_str()).collect()
     }

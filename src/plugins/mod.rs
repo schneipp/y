@@ -1,5 +1,6 @@
 pub mod fuzzy_finder;
 pub mod deno_runtime;
+pub mod git_client;
 pub mod syntax_highlighter;
 pub mod js_fuzzy_finder;
 
@@ -46,6 +47,7 @@ pub struct PluginContext<'a> {
     pub buffer_id: BufferId,
     pub cursor: &'a mut Cursor,
     pub mode: &'a mut Mode,
+    pub default_mode: Mode,
     pub filename: &'a Option<String>,
     pub modified: &'a mut bool,
 }

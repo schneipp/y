@@ -41,7 +41,7 @@ impl<'a> Widget for StatusBar<'a> {
 
         let position_info = Title::from(
             format!(
-                " LN:{} CL:{} CHR:{} ",
+                " F1:Help | LN:{} CL:{} CHR:{} ",
                 self.cursor_row + 1,
                 self.cursor_col + 1,
                 self.char_num
@@ -57,6 +57,7 @@ impl<'a> Widget for StatusBar<'a> {
             Mode::Command => ui.status_mode_command,
             Mode::FuzzyFinder => ui.status_mode_normal,
             Mode::Search => ui.status_mode_command,
+            Mode::Normie => ui.status_mode_insert,
         };
 
         let mode_text = match self.mode {
@@ -67,6 +68,7 @@ impl<'a> Widget for StatusBar<'a> {
             Mode::Command => "-- COMMAND --",
             Mode::Search => "-- SEARCH --",
             Mode::FuzzyFinder => "-- FINDER --",
+            Mode::Normie => "-- EDIT --",
         };
 
         let instructions = if *self.mode == Mode::Command {

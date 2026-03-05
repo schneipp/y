@@ -421,6 +421,31 @@ impl LspManager {
         }
     }
 
+    /// Send textDocument/definition request. Returns the request ID if sent.
+    pub fn request_definition(
+        &mut self,
+        server_name: &str,
+        uri: &str,
+        line: usize,
+        character: usize,
+    ) -> Option<i64> {
+        if !self.is_server_ready(server_name) {
+            return None;
+        }
+        if let Some(client) = self.clients.get_mut(server_name) {
+            let id = client.send_request(
+                "textDocument/definition",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            );
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     /// Send textDocument/formatting request. Returns the request ID if sent.
     pub fn request_formatting(
         &mut self,

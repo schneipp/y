@@ -133,7 +133,7 @@ impl FuzzyFinderPlugin {
                         ctx.cursor.row = 0;
                         ctx.cursor.col = 0;
                         ctx.cursor.desired_col = 0;
-                        *ctx.mode = crate::mode::Mode::Normal;
+                        *ctx.mode = ctx.default_mode.clone();
                         *ctx.modified = false;
                         self.deactivate();
                         return true;
@@ -161,7 +161,7 @@ impl FuzzyFinderPlugin {
                                 .min(ctx.buffer.lines.len().saturating_sub(1));
                             ctx.cursor.col = 0;
                             ctx.cursor.desired_col = 0;
-                            *ctx.mode = crate::mode::Mode::Normal;
+                            *ctx.mode = ctx.default_mode.clone();
                             *ctx.modified = false;
                             self.deactivate();
                             return true;
@@ -188,7 +188,7 @@ impl Plugin for FuzzyFinderPlugin {
         match key.code {
             KeyCode::Esc => {
                 self.deactivate();
-                *ctx.mode = crate::mode::Mode::Normal;
+                *ctx.mode = ctx.default_mode.clone();
                 return true;
             }
             KeyCode::Char(c) => {
