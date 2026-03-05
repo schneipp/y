@@ -62,6 +62,17 @@ impl Editor {
                     self.command_buffer.clear();
                     return;
                 }
+                "setup" => {
+                    self.show_settings = true;
+                    self.settings_selected = 0;
+                    self.command_buffer.clear();
+                    return;
+                }
+                "help" => {
+                    self.show_keybindings = true;
+                    self.command_buffer.clear();
+                    return;
+                }
                 _ => {}
             }
         }
